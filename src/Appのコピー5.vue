@@ -298,15 +298,6 @@ const previewSound = (block) => {
   }
 };
 
-// ブロッククリック時の挙動（色塗りモード対応）
-const onBlockClick = (block) => {
-  if (isPaintMode.value) {
-    setBlockColor(block.id, paintColor.value)
-    return
-  }
-  previewSound(block)
-};
-
 // =====================================================
 // ■ ブロック操作（すべてUndo対応）
 // =====================================================
@@ -374,38 +365,22 @@ const setBlockSound = (id, newSound) => {
   b.sound = newSound;
 };
 
-// 色変更（Undo対応）　ブロック上のカラーピッカー
-
-// const colorPickerBlockId = ref(null);
-
-// const openColorPicker = (blockId) => {
-//   colorPickerBlockId.value = blockId;
-// };
-
-// const closeColorPicker = () => {
-//   colorPickerBlockId.value = null;
-// };
-
-
-// ペイントモード
-const paintColor = ref(null)
-const isPaintMode = ref(false)
-
-const startPaintMode = (color) => {
-  paintColor.value = color
-  isPaintMode.value = true
-}
-
-const endPaintMode = () => {
-  paintColor.value = null
-  isPaintMode.value = false
-}
+// 色変更（Undo対応）
+const colorPickerBlockId = ref(null);
 
 const setBlockColor = (id, newColor) => {
   const b = noteBlocks.value.find(x => x.id === id);
   if (!b || b.color === newColor) return;
   pushHistory();
   b.color = newColor;
+};
+
+const openColorPicker = (blockId) => {
+  colorPickerBlockId.value = blockId;
+};
+
+const closeColorPicker = () => {
+  colorPickerBlockId.value = null;
 };
 
 // WAV書き出し
@@ -605,15 +580,6 @@ const startTour = () => {
           side: "right", align: 'start'
         }
       },
-      // パレットの説明を追加
-      {
-        element: '.sidebar-color-section',
-        popover: {
-          title: 'カラーパレット',
-          description: '色を選んでブロックをクリックすると色を塗れます。「適用終了」ボタンで色塗りモードを解除できます。',
-          side: "right", align: 'start'
-        }
-      },
       {
         element: '.sequencer-wrapper',
         popover: {
@@ -663,27 +629,6 @@ onMounted(() => {
           </div>
         </template>
       </draggable>
-
-            <!-- カラーパレット -->
-      <div class="sidebar-color-section">
-        <h3>Color</h3>
-        <input
-          type="color"
-          class="sidebar-color-picker"
-          :value="paintColor ?? '#ffffff'"
-          @change="startPaintMode($event.target.value)"
-        />
-        <button
-          v-if="isPaintMode"
-          class="btn-end-paint"
-          @click="endPaintMode"
-        >
-          適用終了
-        </button>
-        <p v-if="isPaintMode" class="paint-hint">
-          ブロックをクリックして色を適用
-        </p>
-      </div>
     </div>
 
     <!-- ■ メインコンテンツ -->
@@ -752,12 +697,11 @@ onMounted(() => {
                 'anchor-end':   isEndAnchor(element.id),
                 'group-member': groupDragActive && groupSegmentIds.includes(element.id),
                 'is-group-proxy': groupDragActive && groupDraggedId === element.id,
-                'paint-mode': isPaintMode,
               }"
               :style="{ backgroundColor: element.color }"
               :data-id="element.id"
-              @click="onBlockClick(element)"
-            > <!-- @click="previewSound(element)" -->
+              @click="previewSound(element)"
+            >
               <span class="step-number">{{ index + 1 }}</span>
               <template v-if="groupDragActive && groupDraggedId === element.id">
                 <span class="sound-name">GROUP</span>
@@ -775,14 +719,13 @@ onMounted(() => {
                 </select>
                 <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
                 <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
-                <!-- <button class="btn-color" @click.stop="openColorPicker(element.id)">🎨</button> --> <!-- ブロック上のパレット -->
+                <button class="btn-color" @click.stop="openColorPicker(element.id)">🎨</button>
               </template>
             </div>
           </template>
         </draggable>
 
-        <!-- ブロック上のカラーピッカー表示 -->
-        <!-- <div v-if="colorPickerBlockId !== null"
+        <div v-if="colorPickerBlockId !== null"
             class="color-popup-overlay"
             @click="closeColorPicker">
           <div class="color-popup" @click.stop>
@@ -794,7 +737,7 @@ onMounted(() => {
             />
             <button @click="closeColorPicker">閉じる</button>
           </div>
-        </div> -->
+        </div>
 
         <div v-if="noteBlocks.length === 0" class="empty-state">
           左のパレットから音を置いてみよう
@@ -1032,8 +975,6 @@ select {
 }
 .proxy-chip span { font-weight: 900; font-size: 0.6rem; color: #fff; }
 
-/* ブロック上パレットカラー */
-/*
 .btn-color {
   position: absolute;
   bottom: 2px;
@@ -1096,55 +1037,5 @@ select {
 }
 .color-popup button:hover {
   background: rgba(255,255,255,0.3);
-}
-*/
-
-/*　サイドバーカラー */
-.sidebar-color-section {
-  margin-top: 20px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.sidebar-color-section h3 {
-  font-size: 1.0rem;
-  margin: 0;
-  text-align: center;
-}
-
-.sidebar-color-picker {
-  width: 60px;
-  height: 60px;
-  border: none;
-  border-radius: 8px;
-  cursor: pointer;
-  background: none;
-  padding: 0;
-}
-
-.btn-end-paint {
-  background: #e74c3c;
-  color: white;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  width: 80px;
-}
-.btn-end-paint:hover {
-  background: #c0392b;
-}
-
-.paint-hint {
-  font-size: 0.65rem;
-  color: #aaa;
-  text-align: center;
-  margin: 0;
-}
-
-/* ペイントモード中 */
-.music-block.paint-mode {
-  cursor: crosshair;
 }
 </style>
