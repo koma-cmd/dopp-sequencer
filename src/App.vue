@@ -244,12 +244,26 @@ watch(
 // =====================================================
 // ■ 再生 / 停止 / 書き出し
 // =====================================================
+
 const getBlocksForPlayOrExport = () => {
   const info = selectionInfo.value;
   return info.has
     ? noteBlocks.value.slice(info.startIndex, info.endIndex + 1)
     : noteBlocks.value;
 };
+
+const totalDurationDisplay = computed(() => {
+  if (!isLoaded.value) return '0.00'
+  const blocks = getBlocksForPlayOrExport()
+  let duration = 0
+  blocks.forEach(block => {
+    if (players.has(block.sound)) {
+      const p = players.player(block.sound)
+      duration += p.loaded ? p.buffer.duration : 0
+    }
+  })
+  return duration.toFixed(2)
+})
 
 const playBlocksSequentially = async (blocks) => {
   await Tone.start();
@@ -273,6 +287,8 @@ const playBlocksSequentially = async (blocks) => {
     // }
   });
 };
+
+
 
 const playSelectedOrAll = async () => {
   stopSequence();
@@ -505,8 +521,11 @@ const groupDragActive = ref(false);
 const groupSegmentIds = ref([]);
 const groupDraggedId = ref(null); // このブロックをGROUP表示にする
 let _gState = null;
+let _singleDragPreSnapshot = null  // 単体ドラッグ用のスナップショット
 
 const onSeqDragStart = (evt) => {
+  _singleDragPreSnapshot = snapshotState()
+
   if (!evt || evt.from !== evt.to) return;
   const info = selectionInfo.value;
   if (!info?.has) return;
@@ -545,6 +564,14 @@ const onSeqDragEnd = async (evt) => {
   });
 
   if (!_gState) {
+    // pushHistory()
+    // 単体ドラッグの場合
+    if (_singleDragPreSnapshot) {
+      undoStack.value.push(_singleDragPreSnapshot)  // 並び替え前の状態を積む
+      if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift()
+      redoStack.value = []
+      _singleDragPreSnapshot = null
+    }
     groupDragActive.value = false;
     groupSegmentIds.value = [];
     groupDraggedId.value = null;
@@ -598,6 +625,22 @@ const startTour = () => {
     doneBtnText: '完了',
     steps: [
       {
+        element: '.app-layout',
+        popover: {
+          // title: 'ヘルプ',
+          description: 'DOPP Sequencer へようこそ。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
+        element: '.app-layout',
+        popover: {
+          // title: 'ヘルプ',
+          description: 'このアプリは、音を並べることで曲を作ることができます。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
         element: '.sidebar',
         popover: {
           title: '素材パレット',
@@ -623,10 +666,42 @@ const startTour = () => {
         }
       },
       {
-        element: '.controls',
+        element: '.controls_play',
         popover: {
-          title: 'コントロール',
-          description: '「再生」は選択範囲を再生（無選択なら全体）。「複製」で選択範囲を増やせます。',
+          title: '再生と停止',
+          description: '「再生」は選択範囲（無選択なら全体）を再生。「停止」はその場で再生を停止。「保存」は選択範囲（無選択なら全体）を保存できます。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
+        element: '.controls_group',
+        popover: {
+          title: '複数音の選択',
+          description: '「複製」は選択範囲を複製。「選択解除」は選択を解除。「選択削除」は選択範囲を削除できます。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
+        element: '.controls_undo-redo',
+        popover: {
+          title: 'やり直し',
+          description: '「戻る」は一つ前の操作に戻ることができます。「進む」は「戻る」を押す前の操作に戻ることができます。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
+        element: '.controls_help',
+        popover: {
+          title: 'ヘルプ',
+          description: '操作方法を忘れた時はいつでもここから確認できます。',
+          side: "bottom", align: 'start'
+        }
+      },
+      {
+        element: '.app-layout',
+        popover: {
+          // title: 'ヘルプ',
+          description: 'まずは、音をよく聴いてみましょう。',
           side: "bottom", align: 'start'
         }
       }
@@ -691,40 +766,63 @@ onMounted(() => {
       <div class="header">
         <h1>DOPP Sequencer</h1>
 
+        
         <div class="controls">
-          <button
-            @click="playSelectedOrAll"
-            class="btn-play"
-            :disabled="!isLoaded"
-            :class="{ loading: !isLoaded }"
-          >
-            {{ isLoaded ? (selectionInfo.has ? "▶ 選択再生" : "▶ 全再生") : "読み込み中..." }}
-          </button>
+          <!-- 再生保存系 -->
+          <div class="controls_play">
+            <button
+              @click="playSelectedOrAll"
+              class="btn-play"
+              :disabled="!isLoaded"
+              :class="{ loading: !isLoaded }"
+            >
+              {{ isLoaded ? (selectionInfo.has ? "▶ 選択再生" : "▶ 全体再生") : "読み込み中..." }}
+            </button>
 
-          <button @click="stopSequence" class="btn-stop">■ 停止</button>
+            <button @click="stopSequence" class="btn-stop">■ 停止</button>
 
-          <button @click="exportAudio" class="btn-export" :disabled="!isLoaded">⬇ 保存</button>
+            <button class="duration-display">作品の長さ：{{ totalDurationDisplay }}秒</button>
 
-          <button @click="duplicateSelection" class="btn-duplicate" :disabled="!selectionInfo.has">
-            ⧉ 複製
-          </button>
+            <button @click="exportAudio" class="btn-export" :disabled="!isLoaded">⬇ 保存</button>
 
-          <button @click="clearSelection" class="btn-clear" :disabled="!selectionInfo.has">
-            選択解除
-          </button>
+            
+          </div>
 
-          <button @click="deleteSelection" class="btn-clear" :disabled="!selectionInfo.has">
-            選択削除
-          </button>
+          
 
-          <button @click="undo" class="btn-clear" :disabled="undoStack.length === 0">
-            ↩ Undo
-          </button>
-          <button @click="redo" class="btn-clear" :disabled="redoStack.length === 0">
-            ↪ Redo
-          </button>
+          <!-- 選択操作系 -->
+          <div class="controls_group">
+            <button @click="duplicateSelection" class="btn-duplicate" :disabled="!selectionInfo.has">
+              ⧉ 複製　
+            </button>
 
-          <button @click="startTour" class="btn-help">? 使い方</button>
+            <button @click="clearSelection" class="btn-clear" :disabled="!selectionInfo.has">
+              選択解除
+            </button>
+          
+            <button @click="deleteSelection" class="btn-clear" :disabled="!selectionInfo.has">
+              選択削除
+            </button>
+          </div>
+
+          <!-- undoredo操作系 -->
+          <div class="controls_undo-redo">
+            <button @click="undo" class="btn-undo-redo" :disabled="undoStack.length === 0">
+              ↩ 戻る 
+              <!-- ↩ Undo -->
+            </button>
+
+            <button @click="redo" class="btn-undo-redo" :disabled="redoStack.length === 0">
+              ↪ 進む
+              <!-- ↪ Redo -->
+            </button>
+          </div>
+
+          <!-- undoredo操作系 -->
+          <div class="controls_help">
+            <button @click="startTour" class="btn-help">? 使い方</button>
+          </div>
+          
         </div>
       </div>
 
@@ -769,10 +867,11 @@ onMounted(() => {
                 </div>
               </template>
               <template v-else>
-                <span class="sound-name">{{ element.sound.toUpperCase() }}</span>
                 <select :value="element.sound" @click.stop @change="setBlockSound(element.id, $event.target.value)">
                   <option v-for="s in ['A','B','C','D','E','F','G','H']" :key="s" :value="s">{{ s }}</option>
                 </select>
+                <span class="sound-name">{{ element.sound.toUpperCase() }}</span>
+                
                 <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
                 <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
                 <!-- <button class="btn-color" @click.stop="openColorPicker(element.id)">🎨</button> --> <!-- ブロック上のパレット -->
@@ -863,7 +962,12 @@ onMounted(() => {
 }
 
 .header { margin-bottom: 20px; }
-.controls { display: flex; gap: 10px; flex-wrap: wrap; }
+.controls { display: flex; gap: 14px; flex-wrap: wrap; }
+
+.controls_play { display: flex; gap: 10px; }
+.controls_group { display: flex; gap: 10px; }
+.controls_undo-redo { display: flex; gap: 10px; }
+.controls_help { display: flex; gap: 10px; }
 
 .sequencer-wrapper {
   background-color: #333;
@@ -902,16 +1006,29 @@ onMounted(() => {
 }
 
 button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; font-weight: bold; }
+button:hover { filter: brightness(1.2); }
+button:active { filter: brightness(0.8); transform: translateY(2px); }
+button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #888; }
 
-.btn-play { background-color: #4caf50; color: white; }
+.btn-play { background-color: rgba(76,175,80,1.0); min-width: 112px; color: white; }
+/* .btn-play:active { background-color: rgba(76,175,80,0.8); color: white; } */
 .btn-play:disabled { background-color: #555; cursor: wait; }
 
-.btn-stop { background-color: #ff4757; color: white; }
-.btn-stop:hover { background-color: #ff6b81; }
-.btn-stop:active { transform: translateY(2px); }
+.duration-display {
+  cursor: default !important;
+  background-color: rgba(255, 255, 255, 0.3);
+  color: rgba(255,255,255,1.0);
+  font-size: 1.00rem;
+  align-self: center;
+  filter: none !important;
+  transform: none !important;
+}
+.duration-display:active { background-color: rgba(255, 255, 255, 0.3);}
+
+.btn-stop { background-color: rgba(255,71,87); color: white; }
+/* .btn-stop:active { transform: translateY(2px); } */
 
 .btn-export { background-color: #9b59b6; color: white; }
-.btn-export:hover { background-color: #8e44ad; }
 .btn-export:disabled { background-color: #555; cursor: wait; }
 
 .btn-help {
@@ -921,15 +1038,21 @@ button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; 
   padding: 5px 15px;
   font-size: 0.9rem;
 }
-.btn-help:hover { background-color: #95a5a6; }
+/* .btn-help:hover { background-color: #95a5a6; } */
 
-.btn-duplicate { background-color: rgba(255,255,255,0.15); color: #fff; }
-.btn-duplicate:hover { background-color: rgba(255,255,255,0.3); }
-.btn-duplicate:disabled { background-color: #555; cursor: not-allowed; }
+.btn-duplicate { background-color: rgba(255, 255, 255, 0.3); color: #fff; }
+.btn-duplicate:hover { background-color: rgba(255,255,255,0.4); }
+/* .btn-duplicate:active { background-color: rgba(255,255,255,0.2); } */
+.btn-duplicate:disabled { background-color: #333; cursor: not-allowed; }
 
-.btn-clear { background-color: rgba(255,255,255,0.08); color: #fff; }
-.btn-clear:hover { background-color: rgba(255,255,255,0.2); }
-.btn-clear:disabled { background-color: #555; cursor: not-allowed; }
+.btn-clear { background-color: rgba(255,255,255,0.3); color: #fff; }
+.btn-clear:hover { background-color: rgba(255,255,255,0.4); }
+/* .btn-clear:active { background-color: rgba(255,255,255,0.2); } */
+.btn-clear:disabled { background-color: #333; cursor: not-allowed; }
+
+.btn-undo-redo { background-color: rgba(255,255,255,0.3); color: #fff; padding: 10px 14px; }
+.btn-undo-redo:hover { background-color: rgba(255,255,255,0.4); }
+.btn-undo-redo:disabled { background-color: #333; cursor: not-allowed; }
 
 .seq-chosen,
 .seq-drag,
@@ -970,16 +1093,23 @@ button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; 
 }
 
 .sound-name {
+  position: absolute;
   font-size: 1.2rem; font-weight: 900; color: #fff;
   text-shadow: 1px 1px 0 rgba(0,0,0,0.5);
   margin-bottom: 5px;
+  /* justify-content: center; */
 }
 
 select {
-  width: 80%; font-size: 0.8rem;
-  background: rgba(255,255,255,0.9); color: #333;
-  border: none; border-radius: 2px;
-  margin-bottom: 15px; cursor: pointer;
+  position: absolute;
+  width: 17%;
+  right: 6%;
+  bottom: 8%;
+  font-size: 0.8rem;
+  background: rgba(255,255,255,0.5); color: #333;
+  border: none; border-radius: 50px;
+  /* margin-bottom: 15px;  */
+  cursor: pointer;
 }
 
 .btn-delete {
@@ -991,13 +1121,22 @@ select {
 .btn-delete:hover { background: rgba(255,0,0,0.7); }
 
 .btn-select-range {
-  position: absolute; bottom: 2px;
+  position: absolute; 
+  /* left: 6px; */
+  bottom: 6px;
   background: rgba(255,255,255,0.2);
   color: white; width: auto;
   padding: 0 8px; height: 20px;
   font-size: 10px; line-height: 20px;
-  border-radius: 4px;
+  border-radius: 50px;
+  /* border-radius: 4px; */
   border: 1px solid rgba(255,255,255,0.3);
+}
+.btn-select-range::after {
+  content: '';
+  position: absolute;
+  top: -8px; bottom: -8px;
+  left: -8px; right: -8px;
 }
 .btn-select-range:hover {
   background: rgba(255,255,255,0.9);
