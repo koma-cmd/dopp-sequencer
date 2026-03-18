@@ -3,6 +3,9 @@ import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue'
 import draggable from 'vuedraggable';
 import * as Tone from 'tone';
 
+// =====================================================
+// ■ 1. パレット定義
+// =====================================================
 const soundPalette = ref([
   { sound: 'A', label: 'Sound A', color: '#555555' },
   { sound: 'B', label: 'Sound B', color: '#555555' },
@@ -14,6 +17,9 @@ const soundPalette = ref([
   { sound: 'H', label: 'Sound H', color: '#555555' },
 ]);
 
+// =====================================================
+// ■ 2. シーケンサー初期データ
+// =====================================================
 const noteBlocks = ref([
   { id: 1, sound: 'A', color: '#555555', isPlaying: false },
   { id: 2, sound: 'B', color: '#555555', isPlaying: false },
@@ -26,6 +32,9 @@ const nextId = ref(9);
 const isLoaded = ref(false);
 const isSoundEnabled = ref(false);
 
+// =====================================================
+// ■ 3. Tone.Players 準備
+// =====================================================
 const players = new Tone.Players({
   "A": "sounds/frag_A2.wav",
   "B": "sounds/frag_B2.wav",
@@ -36,10 +45,18 @@ const players = new Tone.Players({
   "G": "sounds/frag_G2.wav",
   "H": "sounds/frag_H2.wav",
 }, {
-  onload: () => { isLoaded.value = true; }
+  onload: () => {
+    isLoaded.value = true;
+    console.log("音源の読み込み完了！");
+  }
 }).toDestination();
 
-const cloneSound = (origin) => ({ ...origin, id: nextId.value++, isPlaying: false });
+// =====================================================
+// ■ 4. パレットからの複製（clone）
+// =====================================================
+const cloneSound = (origin) => {
+  return { ...origin, id: nextId.value++, isPlaying: false };
+};
 
 // =====================================================
 // ■ Undo / Redo
@@ -98,6 +115,9 @@ const onKeydown = (e) => {
   if ((e.key.toLowerCase() === "z" && e.shiftKey) || e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
 };
 
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+
 // =====================================================
 // ■ 範囲選択ロジック
 // =====================================================
@@ -152,14 +172,14 @@ const isBlockSelected = (blockId) => {
 };
 
 const isStartAnchor = (blockId) => selectionStartId.value === blockId && blockId != null;
-const isEndAnchor   = (blockId) => selectionEndId.value   === blockId && blockId != null;
+const isEndAnchor = (blockId) => selectionEndId.value === blockId && blockId != null;
 
 watch(
   () => noteBlocks.value.map(b => b.id),
   (ids) => {
     if (groupDragActive.value) return;
     if (selectionStartId.value != null && !ids.includes(selectionStartId.value)) { clearSelection(); return; }
-    if (selectionEndId.value   != null && !ids.includes(selectionEndId.value))   { selectionEndId.value = null; awaitingEnd.value = true; }
+    if (selectionEndId.value != null && !ids.includes(selectionEndId.value)) { selectionEndId.value = null; awaitingEnd.value = true; }
   }
 );
 
@@ -194,7 +214,7 @@ const playBlocksSequentially = async (blocks) => {
     const player = players.player(block.sound);
     const fileDuration = player.buffer.duration;
     player.start(now + timeOffset);
-    Tone.Draw.schedule(() => { block.isPlaying = true; },  now + timeOffset);
+    Tone.Draw.schedule(() => { block.isPlaying = true; }, now + timeOffset);
     Tone.Draw.schedule(() => { block.isPlaying = false; }, now + timeOffset + fileDuration);
     timeOffset += fileDuration;
   });
@@ -214,27 +234,33 @@ const stopSequence = () => {
 };
 
 const previewSound = (block) => {
-  if (!isSoundEnabled.value) return;
+  if (!isSoundEnabled.value) return
   if (players.has(block.sound)) {
-    players.player(block.sound).start();
-    block.isPlaying = true;
-    setTimeout(() => { block.isPlaying = false; }, 200);
+    players.player(block.sound).start()
+    block.isPlaying = true
+    setTimeout(() => { block.isPlaying = false }, 200)
   }
-  if (isListeningMode.value) openVasModal(block.sound);
-};
+  if (isListeningMode.value) {
+    openVasModal(block.sound)
+  }
+}
+
+// const previewSound = (block) => {
+//   if (!isSoundEnabled.value) return;
+//   if (players.has(block.sound)) {
+//     players.player(block.sound).start();
+//     block.isPlaying = true;
+//     setTimeout(() => { block.isPlaying = false; }, 200);
+//   }
+// };
 
 const onBlockClick = (block) => {
-  // ボタン・セレクト系要素からのクリックは無視
-  const ignored = event.target.closest(
-    'button, select, .selectbox-wrapper, .selectbox-dropdown, .selectbox-trigger, .selectbox-option'
-  );
-  if (ignored) return;
   if (isPaintMode.value) { setBlockColor(block.id, paintColor.value); return; }
   previewSound(block);
 };
 
 // =====================================================
-// ■ ブロック操作
+// ■ ブロック操作（すべてUndo対応）
 // =====================================================
 const onPaletteAdd = () => {
   pushHistoryFromPreSnapshot();
@@ -362,7 +388,7 @@ const downloadWav = (audioBuffer) => {
 // =====================================================
 const groupDragActive = ref(false);
 const groupSegmentIds = ref([]);
-const groupDraggedId  = ref(null);
+const groupDraggedId = ref(null);
 let _gState = null;
 let _singleDragPreSnapshot = null;
 
@@ -417,91 +443,86 @@ const onSeqDragEnd = async (evt) => {
   base.splice(insertAt, 0, ...segs);
   noteBlocks.value = base;
   selectionStartId.value = segmentIds[0] ?? null;
-  selectionEndId.value   = segmentIds[segmentIds.length - 1] ?? null;
+  selectionEndId.value = segmentIds[segmentIds.length - 1] ?? null;
   awaitingEnd.value = false;
 };
-
-// =====================================================
-// ■ カスタムドロップダウン
-// =====================================================
-const openDropdownId = ref(null);
-const toggleDropdown = (id) => { openDropdownId.value = openDropdownId.value === id ? null : id; };
-const selectSound    = (id, sound) => { setBlockSound(id, sound); openDropdownId.value = null; };
-const onDocClick     = () => { openDropdownId.value = null; };
 
 // =====================================================
 // ■ VAS データ
 // =====================================================
 const vasLabels = [
-  { key: 'high_low',     left: '高',     right: '低'   },
-  { key: 'short_long',   left: '短',     right: '長'   },
-  { key: 'soft_hard',    left: '柔',  right: '硬'  },
-  { key: 'hot_cold',     left: '熱',     right: '冷' },
-  { key: 'rough_smooth', left: '荒',     right: '滑' },
-];
+  { key: 'high_low',      left: '高い',   right: '低い'   },
+  { key: 'short_long',    left: '短い',   right: '長い'   },
+  { key: 'soft_hard',     left: '柔らかい', right: '硬い' },
+  { key: 'hot_cold',      left: '熱い',   right: '冷たい' },
+  { key: 'rough_smooth',  left: '荒い',   right: '滑らか' },
+]
 
-const defaultVas = () => ({ high_low: 50, short_long: 50, soft_hard: 50, hot_cold: 50, rough_smooth: 50 });
+const defaultVas = () => ({ high_low: 50, short_long: 50, soft_hard: 50, hot_cold: 50, rough_smooth: 50 })
 
 const vasData = ref(
   Object.fromEntries(['A','B','C','D','E','F','G','H'].map(s => [s, defaultVas()]))
-);
+)
 
-const vasModalTarget = ref(null);
-const openVasModal   = (sound) => { vasModalTarget.value = sound; };
-const closeVasModal  = () => { vasModalTarget.value = null; };
+const vasModalTarget = ref(null)   // 開いている音キー ('A'〜'H') or null
+
+const openVasModal  = (sound) => { vasModalTarget.value = sound }
+const closeVasModal = () => { vasModalTarget.value = null }
 
 // =====================================================
-// ■ VAS 表示モード（制作フェーズ・全ブロック一括）
+// ■ VAS 表示トグル（制作フェーズ）
 // =====================================================
-const isVasMode   = ref(false);
-const toggleVasMode = () => { isVasMode.value = !isVasMode.value; };
+
+//削除
+// const vasVisibleIds = ref(new Set())
+
+// const toggleVasVisible = (id) => {
+//   const s = new Set(vasVisibleIds.value)
+//   if (s.has(id)) { s.delete(id) } else { s.add(id) }
+//   vasVisibleIds.value = s
+// }
+
+// const isVasVisible = (id) => vasVisibleIds.value.has(id)
+
+// 追加
+const isVasMode = ref(false)
+const toggleVasMode = () => { isVasMode.value = !isVasMode.value }
+
+// ドロップダウン開閉状態
+const openDropdownId = ref(null)
+
+const toggleDropdown = (id) => {
+  openDropdownId.value = openDropdownId.value === id ? null : id
+}
+
+const selectSound = (id, sound) => {
+  setBlockSound(id, sound)
+  openDropdownId.value = null
+}
+
+// ブロック外クリックで閉じる
+const onDocClick = () => { openDropdownId.value = null }
+// onMounted/onBeforeUnmountに追記
+// onMounted内: document.addEventListener('click', onDocClick)
+// onBeforeUnmount内: document.removeEventListener('click', onDocClick)
 
 // =====================================================
 // ■ アンケート
 // =====================================================
-const isSurveyMode  = ref(false);
-const openSurvey    = async () => {
-  isSurveyMode.value = true;
-  window.open('https://docs.google.com/forms/d/e/1FAIpQLSd4lACT6GimL9OloSUs5k7LjG8LivXz6VyGZOqIcZnLq6Sguw/viewform?usp=header', '_blank');
-  // 全体を自動保存（選択範囲を無視して全ブロック対象）
-  if (noteBlocks.value.length > 0 && isLoaded.value) {
-    const allBlocks = noteBlocks.value;
-    let totalDuration = 0;
-    allBlocks.forEach(block => {
-      if (players.has(block.sound)) {
-        const p = players.player(block.sound);
-        totalDuration += p.loaded ? p.buffer.duration : 0;
-      }
-    });
-    if (totalDuration > 0) {
-      totalDuration += 1.0;
-      const buffer = await Tone.Offline(() => {
-        let timeOffset = 0;
-        allBlocks.forEach(block => {
-          if (players.has(block.sound)) {
-            const originalBuffer = players.player(block.sound).buffer;
-            const source = new Tone.BufferSource(originalBuffer).toDestination();
-            source.start(timeOffset);
-            timeOffset += originalBuffer.duration;
-          }
-        });
-      }, totalDuration);
-      downloadWav(buffer);
-    }
-  }
-};
+const isSurveyMode = ref(false);
+const openSurvey = () => { isSurveyMode.value = true; window.open('https://docs.google.com/forms/d/e/1FAIpQLSd4lACT6GimL9OloSUs5k7LjG8LivXz6VyGZOqIcZnLq6Sguw/viewform?usp=header', '_blank'); };
 const completeSurvey = () => { isSurveyMode.value = false; };
 
 // =====================================================
 // ■ 試聴モード
 // =====================================================
-const isListeningMode     = ref(false);
-const listeningTimeLeft   = ref(300);
-const listeningTimer      = ref(null);
+const isListeningMode = ref(false);
+const listeningTimeLeft = ref(30);
+const listeningTimer = ref(null);
 const showListeningWarning = ref(false);
 
 const startListeningMode = () => {
-  isSoundEnabled.value = true; isListeningMode.value = true; listeningTimeLeft.value = 300;
+  isSoundEnabled.value = true; isListeningMode.value = true; listeningTimeLeft.value = 30;
   listeningTimer.value = setInterval(() => {
     listeningTimeLeft.value--;
     if (listeningTimeLeft.value === 60) showListeningWarning.value = true;
@@ -519,9 +540,9 @@ const formatListeningTime = computed(() => {
 // ■ 制作フェーズ管理
 // =====================================================
 const phaseStartTime = ref(null);
-const currentPhase   = ref(0);
-const endTime        = ref(null);
-const phaseTimer     = ref(null);
+const currentPhase = ref(0);
+const endTime = ref(null);
+const phaseTimer = ref(null);
 
 const formatTime = (date) => {
   const h = date.getHours().toString().padStart(2, '0');
@@ -541,16 +562,22 @@ const startPhaseTimer = () => {
 };
 
 // =====================================================
-// ■ チュートリアル
+// ■ 自作チュートリアル
 // =====================================================
 const tutorialStep = ref(-1);
+
 const currentTutorial = computed(() => {
   if (tutorialStep.value < 0 || tutorialStep.value >= tutorialSteps.length) return null;
   return tutorialSteps[tutorialStep.value];
 });
+
 const isTutorialActive = computed(() => currentTutorial.value !== null);
-const isHelpMode       = ref(false);
-const isHelpMenuOpen   = ref(false);
+
+// isHelpMode: ヘルプから起動したか（true=完了・中断後に試聴フェーズへ行かない）
+const isHelpMode = ref(false);
+
+// ★ isHelpMenuOpen: ヘルプ目次モーダルの表示フラグ
+const isHelpMenuOpen = ref(false);
 
 const tutorialSteps = [
   {                         title: null,              message: 'DOPP Sequencer へようこそ。',                                                               type: 'next',   targets: [] },
@@ -570,6 +597,8 @@ const tutorialSteps = [
   {                         title: 'ヘルプ',          message: '操作方法を忘れた時はいつでもここから確認できます。',                                             type: 'done',   targets: ['.controls_help'] },
 ];
 
+// ★ helpMenuItems: ヘルプ目次に表示する項目
+//    stepIndex は tutorialSteps の配列インデックスに対応
 const helpMenuItems = [
   { label: '素材パレット',     stepIndex: 3  },
   { label: 'カラーパレット',   stepIndex: 5  },
@@ -582,12 +611,15 @@ const helpMenuItems = [
   { label: 'はじめから',     stepIndex: 0  },
 ];
 
-const tutorialActionDone          = ref(false);
-const tutorialDuplicateDone       = ref(false);
-const noteBlocksCountAtDuplicate  = ref(0);
+const tutorialActionDone = ref(false);
+const tutorialDuplicateDone = ref(false);
+const noteBlocksCountAtDuplicate = ref(0);
 
+// =====================================================
+// ■ チュートリアルのハイライト処理
+// =====================================================
 const clearTutorialHighlights = () => {
-  document.querySelectorAll('.tutorial-focus').forEach(el => el.classList.remove('tutorial-focus'));
+  document.querySelectorAll('.tutorial-focus').forEach(el => { el.classList.remove('tutorial-focus'); });
 };
 
 const applyTutorialHighlight = (step) => {
@@ -597,7 +629,7 @@ const applyTutorialHighlight = (step) => {
   nextTick(() => {
     if (step !== tutorialStep.value) return;
     targets.forEach(selector => {
-      document.querySelectorAll(selector).forEach(el => el.classList.add('tutorial-focus'));
+      document.querySelectorAll(selector).forEach(el => { el.classList.add('tutorial-focus'); });
     });
   });
 };
@@ -609,11 +641,15 @@ const advanceTutorial = () => {
   else { endTutorial(); }
 };
 
+// endTutorial: isHelpModeで分岐
 const endTutorial = () => {
   clearTutorialHighlights();
   tutorialStep.value = -1;
-  if (isHelpMode.value) { isHelpMode.value = false; }
-  else { startListeningMode(); }
+  if (isHelpMode.value) {
+    isHelpMode.value = false;  // フラグリセット。タイマー・フェーズはそのまま
+  } else {
+    startListeningMode();  // 初回のみ試聴フェーズへ
+  }
 };
 
 const startTutorial = () => {
@@ -623,8 +659,12 @@ const startTutorial = () => {
   noteBlocksCountAtDuplicate.value = 0;
 };
 
-const startTour = () => { isHelpMenuOpen.value = true; };
+// ★ startTour: ヘルプボタンから呼ばれる → 目次モーダルを開く
+const startTour = () => {
+  isHelpMenuOpen.value = true;
+};
 
+// ★ startTourFromStep: 目次の項目クリック時 → 指定ステップからチュートリアル開始
 const startTourFromStep = (stepIndex) => {
   isHelpMenuOpen.value = false;
   isHelpMode.value = true;
@@ -633,19 +673,14 @@ const startTourFromStep = (stepIndex) => {
   tutorialDuplicateDone.value = false;
 };
 
-onMounted(() => {
-  window.addEventListener("keydown", onKeydown);
-  document.addEventListener('click', onDocClick);
-  setTimeout(() => startTutorial(), 1000);
-});
-
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
-  document.removeEventListener('click', onDocClick);
-  if (phaseTimer.value)    clearInterval(phaseTimer.value);
+  if (phaseTimer.value) clearInterval(phaseTimer.value);
   if (listeningTimer.value) clearInterval(listeningTimer.value);
   clearTutorialHighlights();
 });
+
+onMounted(() => { setTimeout(() => startTutorial(), 1000); });
 </script>
 
 <template>
@@ -660,12 +695,18 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- ヘルプ目次モーダル -->
+    <!-- ★ ヘルプ目次モーダル
+         オーバーレイクリックで閉じる (@click.self) -->
     <div v-if="isHelpMenuOpen" class="help-menu-overlay" @click.self="isHelpMenuOpen = false">
       <div class="help-menu-modal">
         <p class="help-menu-title">どの操作を確認しますか？</p>
         <div class="help-menu-list">
-          <button v-for="item in helpMenuItems" :key="item.stepIndex" class="help-menu-item" @click="startTourFromStep(item.stepIndex)">
+          <button
+            v-for="item in helpMenuItems"
+            :key="item.stepIndex"
+            class="help-menu-item"
+            @click="startTourFromStep(item.stepIndex)"
+          >
             {{ item.label }}
           </button>
         </div>
@@ -683,6 +724,7 @@ onBeforeUnmount(() => {
       <div class="tutorial-footer">
         <span class="tutorial-progress">{{ tutorialStep + 1 }} / {{ tutorialSteps.length }}</span>
         <div class="tutorial-footer-buttons">
+          <!-- ヘルプモードのときだけ中断ボタンを表示 -->
           <button v-if="isHelpMode" class="tutorial-btn-cancel" @click="endTutorial">中断</button>
           <button v-if="currentTutorial.type === 'next'" class="tutorial-btn" @click="advanceTutorial">次へ →</button>
           <button v-else-if="currentTutorial.type === 'done'" class="tutorial-btn" @click="endTutorial">完了</button>
@@ -691,49 +733,51 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 試聴モードオーバーレイ -->
-    <div v-if="isListeningMode" class="listening-overlay">
-      <!-- VAS 入力モーダル（試聴フェーズ） -->
-      <div v-if="vasModalTarget" class="vas-overlay" @click.self="closeVasModal">
-        <div class="vas-modal">
-          <p class="vas-modal-title">Sound {{ vasModalTarget }} の印象</p>
-          <div class="vas-rows">
-            <div v-for="item in vasLabels" :key="item.key" class="vas-row">
-              <span class="vas-label-left">{{ item.left }}</span>
-              <input type="range" min="0" max="100" class="vas-slider"
-                :value="vasData[vasModalTarget][item.key]"
-                @input="vasData[vasModalTarget][item.key] = Number($event.target.value)" />
-              <span class="vas-label-right">{{ item.right }}</span>
-            </div>
+    <!-- VAS 入力モーダル（試聴フェーズ） -->
+    <div v-if="vasModalTarget" class="vas-overlay" @click.self="closeVasModal">
+      <div class="vas-modal">
+        <p class="vas-modal-title">Sound {{ vasModalTarget }} の印象</p>
+        <div class="vas-rows">
+          <div v-for="item in vasLabels" :key="item.key" class="vas-row">
+            <span class="vas-label-left">{{ item.left }}</span>
+            <input
+              type="range" min="0" max="100"
+              class="vas-slider"
+              :value="vasData[vasModalTarget][item.key]"
+              @input="vasData[vasModalTarget][item.key] = Number($event.target.value)"
+            />
+            <span class="vas-label-right">{{ item.right }}</span>
           </div>
-          <button class="vas-close-btn" @click="closeVasModal">保存して閉じる</button>
         </div>
+        <button class="vas-close-btn" @click="closeVasModal">保存して閉じる</button>
       </div>
+    </div>
 
+    <!-- 試聴モードオーバーレイ（フェードイン） -->
+    <div v-if="isListeningMode" class="listening-overlay">
       <div class="listening-modal">
-        <p class="listening-title">まずはじっくり音を聴いてみましょう</p>
-        
+        <p class="listening-title">まずは音を聴いてみましょう</p>
         <div class="listening-blocks">
           <div v-for="item in soundPalette" :key="item.sound"
-               class="listening-block" :style="{ backgroundColor: item.color }"
-               @click="previewSound(item)">
+              class="listening-block" :style="{ backgroundColor: item.color }"
+              @click="previewSound(item)">
             <span class="listening-block-label">{{ item.sound }}</span>
-            
+            <span class="listening-block-hint">タップしてVAS入力</span>
           </div>
+          <!-- <div v-for="item in soundPalette" :key="item.sound" class="listening-block" :style="{ backgroundColor: item.color }" @click="previewSound(item)">
+            <span class="listening-block-label">{{ item.sound }}</span>
+          </div> -->
         </div>
-        <p class="listening-block-hint">各ブロックをクリックして音への印象を評価してみてください</p>
         <p v-if="showListeningWarning" class="listening-warning">⏰ 1分後に制作が始まります</p>
         <p class="listening-timer">残り {{ formatListeningTime }}</p>
       </div>
     </div>
 
-    <!-- ■ サイドバー -->
+    <!-- ■ サイドバー（パレット） -->
     <div class="sidebar">
       <h2>Palette</h2>
       <p class="hint">Drag to right area 👉</p>
-      <draggable v-model="soundPalette" item-key="sound" class="palette-list"
-                 :group="{ name: 'music', pull: 'clone', put: false }"
-                 :clone="cloneSound" :sort="false" @start="onPaletteDragStart">
+      <draggable v-model="soundPalette" item-key="sound" class="palette-list" :group="{ name: 'music', pull: 'clone', put: false }" :clone="cloneSound" :sort="false" @start="onPaletteDragStart">
         <template #item="{ element }">
           <div class="palette-item" @click="previewSound(element)">
             <span class="palette-icon">♪</span>
@@ -741,20 +785,21 @@ onBeforeUnmount(() => {
           </div>
         </template>
       </draggable>
-
       <div class="sidebar-color-section">
         <h3>Color</h3>
         <input type="color" class="sidebar-color-picker" :value="paintColor ?? '#ffffff'" @change="startPaintMode($event.target.value)" />
         <button v-if="isPaintMode" class="btn-end-paint" @click="endPaintMode">適用終了</button>
         <p v-if="isPaintMode" class="paint-hint">ブロックをクリックして色を適用</p>
       </div>
-
       <div class="sidebar-vas-section">
-        <h3>比喩</h3>
-        <button class="btn-vas-mode" :class="{ active: isVasMode }" @click="toggleVasMode" :disabled="currentPhase === 0">
-          {{ isVasMode ? '解除' : '表示' }}
+        <button
+          class="btn-vas-mode"
+          :class="{ active: isVasMode }"
+          @click="toggleVasMode"
+          :disabled="currentPhase === 0"
+        >
+          {{ isVasMode ? 'VAS解除' : 'VAS表示' }}
         </button>
-        <p v-if="currentPhase === 0" class="vas-hint">制作開始後に使えます</p>
       </div>
     </div>
 
@@ -791,8 +836,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="controls_group">
             <button @click="duplicateSelection" class="btn-duplicate" :disabled="!selectionInfo.has">⧉ 複製</button>
-            <button @click="clearSelection"     class="btn-clear"     :disabled="!selectionInfo.has">選択解除</button>
-            <button @click="deleteSelection"    class="btn-clear"     :disabled="!selectionInfo.has">選択削除</button>
+            <button @click="clearSelection" class="btn-clear" :disabled="!selectionInfo.has">選択解除</button>
+            <button @click="deleteSelection" class="btn-clear" :disabled="!selectionInfo.has">選択削除</button>
           </div>
           <div class="controls_undo-redo">
             <button @click="undo" class="btn-undo" :disabled="undoStack.length === 0">↩ 戻る</button>
@@ -805,9 +850,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sequencer-wrapper">
-        <draggable v-model="noteBlocks" item-key="id" class="block-list" animation="200" group="music"
-                   ghost-class="seq-ghost" chosen-class="seq-chosen" drag-class="seq-drag"
-                   @start="onSeqDragStart" @end="onSeqDragEnd" @add="onPaletteAdd">
+        <draggable v-model="noteBlocks" item-key="id" class="block-list" animation="200" group="music" ghost-class="seq-ghost" chosen-class="seq-chosen" drag-class="seq-drag" @start="onSeqDragStart" @end="onSeqDragEnd" @add="onPaletteAdd">
           <template #item="{ element, index }">
             <div
               class="music-block"
@@ -819,70 +862,89 @@ onBeforeUnmount(() => {
                 'group-member':   groupDragActive && groupSegmentIds.includes(element.id),
                 'is-group-proxy': groupDragActive && groupDraggedId === element.id,
                 'paint-mode':     isPaintMode,
-                'vas-mode':       isVasMode,
               }"
               :style="{ backgroundColor: element.color }"
               :data-id="element.id"
-              @click="onBlockClick(element, $event)"
+              @click="onBlockClick(element)"
             >
               <span class="step-number">{{ index + 1 }}</span>
-
               <template v-if="groupDragActive && groupDraggedId === element.id">
                 <span class="sound-name">GROUP</span>
                 <div class="proxy-chips">
-                  <div v-for="seg in noteBlocks.filter(b => groupSegmentIds.includes(b.id))" :key="seg.id"
-                       class="proxy-chip" :style="{ backgroundColor: seg.color }">
+                  <div v-for="seg in noteBlocks.filter(b => groupSegmentIds.includes(b.id))" :key="seg.id" class="proxy-chip" :style="{ backgroundColor: seg.color }">
                     <span>{{ seg.sound }}</span>
                   </div>
                 </div>
               </template>
-
               <template v-else>
-                <!-- ========== VAS 表示モード ========== -->
+                <!-- VAS 表示モード -->
+                <!-- <template v-if="isVasVisible(element.id)"> -->
                 <template v-if="isVasMode">
-                  <span class="sound-name sound-name--vas">{{ element.sound.toUpperCase() }}</span>
                   <div class="vas-bars">
                     <div v-for="item in vasLabels" :key="item.key" class="vas-bar-row">
-                      <span class="vas-bar-label-left">{{ item.left }}</span>
-                      <div class="vas-bar-track-wrap">
-                        <div class="vas-bar-track">
-                          <div class="vas-bar-fill" :style="{ width: vasData[element.sound][item.key] + '%' }">
-                            <div class="vas-bar-thumb"></div>
-                          </div>
-                        </div>
+                      <div class="vas-bar-labels">
+                        <span class="vas-bar-label-left">{{ item.left }}</span>
+                        <span class="vas-bar-label-right">{{ item.right }}</span>
                       </div>
-                      <span class="vas-bar-label-right">{{ item.right }}</span>
+                      <div class="vas-bar-track">
+                        <div class="vas-bar-fill" :style="{ width: vasData[element.sound][item.key] + '%' }"></div>
+                      </div>
                     </div>
                   </div>
-                  <!-- VASモード中もボタン類をすべて表示 -->
-                  <div class="selectbox-wrapper" @click.stop>
-                    <button class="selectbox-trigger" @click.stop="toggleDropdown(element.id)">▼</button>
-                    <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
-                      <button v-for="s in ['A','B','C','D','E','F','G','H']" :key="s"
-                              class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
-                              @click="selectSound(element.id, s)">{{ s }}</button>
+                  <!-- <div class="vas-bars">
+                    <div v-for="item in vasLabels" :key="item.key" class="vas-bar-row">
+                      <div class="vas-bar-track">
+                        <div class="vas-bar-fill" :style="{ width: vasData[element.sound][item.key] + '%' }"></div>
+                      </div>
                     </div>
-                  </div>
-                  <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
-                  <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
+                  </div> -->
                 </template>
 
-
-                <!-- ========== 通常表示モード ========== -->
+                <!-- 通常表示モード -->
                 <template v-else>
                   <span class="sound-name">{{ element.sound.toUpperCase() }}</span>
-                  <div class="selectbox-wrapper" @click.stop>
-                    <button class="selectbox-trigger" @click.stop="toggleDropdown(element.id)">▼</button>
-                    <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
-                      <button v-for="s in ['A','B','C','D','E','F','G','H']" :key="s"
-                              class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
-                              @click="selectSound(element.id, s)">{{ s }}</button>
-                    </div>
-                  </div>
-                  <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
-                  <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
                 </template>
+
+                <!-- 常時表示：セレクトボックス・ボタン類 -->
+                <div class="selectbox-wrapper" @click.stop>
+                  <button class="selectbox-trigger" @click="toggleDropdown(element.id)">▼</button>
+                  <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
+                    <button v-for="s in ['A','B','C','D','E','F','G','H']" :key="s"
+                            class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
+                            @click="selectSound(element.id, s)">{{ s }}</button>
+                  </div>
+                </div>
+                <!-- <button class="btn-vas-toggle" @click.stop="toggleVasVisible(element.id)"
+                        :class="{ active: isVasVisible(element.id) }">≡</button> -->
+                <button class="btn-select-range" @click.stop="setRangePoint(element.id)">
+                  {{ getSelectBtnText(element) }}
+                </button>
+                <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
               </template>
+              <!-- <template v-else>
+                <div class="selectbox-wrapper" @click.stop>
+                  <button class="selectbox-trigger" @click="toggleDropdown(element.id)">▼</button>
+                  <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
+                    <button
+                      v-for="s in ['A','B','C','D','E','F','G','H']"
+                      :key="s"
+                      class="selectbox-option"
+                      :class="{ 'is-selected': element.sound === s }"
+                      @click="selectSound(element.id, s)"
+                    >{{ s }}</button>
+                  </div>
+                </div>
+
+                <-
+                 <select class="selectbox" :value="element.sound" @click.stop @change="setBlockSound(element.id, $event.target.value)">
+                  <option v-for="s in ['A','B','C','D','E','F','G','H']" :key="s" :value="s">{{ s }}</option>
+                </select>
+                 ->
+
+                <span class="sound-name">{{ element.sound.toUpperCase() }}</span>
+                <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
+                <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
+              </template> -->
             </div>
           </template>
         </draggable>
@@ -895,9 +957,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .app-layout { display: flex; height: 100vh; background-color: #222; color: white; font-family: sans-serif; overflow: hidden; }
 
-/* =====================================================
-   サイドバー
-   ===================================================== */
 .sidebar { width: 120px; background-color: #2d2d2d; padding: 20px 10px; border-right: 1px solid #444; display: flex; flex-direction: column; overflow-y: auto; }
 .sidebar h2 { font-size: 1.2rem; margin-bottom: 5px; text-align: center; }
 .hint { font-size: 0.7rem; color: #aaa; text-align: center; margin-bottom: 20px; }
@@ -908,39 +967,18 @@ onBeforeUnmount(() => {
 .palette-icon { font-size: 1.2rem; margin-bottom: 2px; }
 .palette-label { font-size: 1.0rem; font-weight: bold; }
 
-.sidebar-color-section { margin-top: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.sidebar-color-section h3 { font-size: 1.0rem; margin: 0; text-align: center; }
-.sidebar-color-picker { width: 60px; height: 60px; border: none; border-radius: 8px; cursor: pointer; background: none; padding: 0; }
-.btn-end-paint { background: #e74c3c; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; width: 80px; }
-.btn-end-paint:hover { background: #c0392b; }
-.paint-hint { font-size: 0.65rem; color: #aaa; text-align: center; margin: 0; }
-
-.sidebar-vas-section { margin-top: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
-.sidebar-vas-section h3 { font-size: 1.0rem; margin: 0; text-align: center; }
-.btn-vas-mode { background: rgba(255,255,255,0.15); color: white; padding: 6px 10px; border-radius: 6px; font-size: 0.8rem; width: 80px; transition: background 0.15s; border: 1px solid transparent; }
-.btn-vas-mode:hover { background: rgba(255,255,255,0.25); filter: none; }
-.btn-vas-mode.active { background: rgba(126,184,247,0.25); border-color: rgba(126,184,247,0.6); color: #7eb8f7; }
-.btn-vas-mode:disabled { opacity: 0.35; cursor: not-allowed; }
-.vas-hint { font-size: 0.62rem; color: #888; text-align: center; margin: 0; line-height: 1.3; }
-
-/* =====================================================
-   メインコンテンツ
-   ===================================================== */
 .main-content { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow-y: auto; }
 .header { margin-bottom: 20px; }
 .controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.controls_play      { display: flex; gap: 10px; align-items: center; }
-.controls_group     { display: flex; gap: 10px; align-items: center; }
+.controls_play     { display: flex; gap: 10px; align-items: center; }
+.controls_group    { display: flex; gap: 10px; align-items: center; }
 .controls_undo-redo { display: flex; gap: 10px; align-items: center; }
-.controls_help      { display: flex; gap: 10px; align-items: center; }
+.controls_help     { display: flex; gap: 10px; align-items: center; }
 
 .sequencer-wrapper { background-color: #333; padding: 20px; border-radius: 8px; flex: 1; min-height: 300px; display: flex; flex-direction: column; position: relative; }
 .block-list { display: flex; flex-wrap: wrap; gap: 30px 10px; flex: 1; align-content: flex-start; width: 100%; min-height: 100%; }
 .empty-state { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #666; font-weight: bold; border: 2px dashed #444; border-radius: 8px; box-sizing: border-box; pointer-events: none; }
 
-/* =====================================================
-   ボタン共通
-   ===================================================== */
 button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; font-weight: bold; }
 button:hover { filter: brightness(1.2); }
 button:active { filter: brightness(0.8); transform: translateY(2px); }
@@ -950,10 +988,10 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .btn-play:disabled { background-color: #555; cursor: wait; }
 .duration-display { cursor: default !important; background-color: rgba(255,255,255,0.3); color: rgba(255,255,255,1.0); font-size: 1.00rem; filter: none !important; transform: none !important; }
 .duration-display:active { background-color: rgba(255,255,255,0.3); }
-.btn-stop    { background-color: rgba(255,71,87,1.0); color: white; }
-.btn-export  { background-color: #9b59b6; color: white; }
+.btn-stop   { background-color: rgba(255,71,87,1.0); color: white; }
+.btn-export { background-color: #9b59b6; color: white; }
 .btn-export:disabled { background-color: #555; cursor: wait; }
-.btn-help    { background-color: #7f8c8d; color: white; border-radius: 50px; padding: 5px 15px; font-size: 0.9rem; }
+.btn-help { background-color: #7f8c8d; color: white; border-radius: 50px; padding: 5px 15px; font-size: 0.9rem; }
 .btn-duplicate { background-color: rgba(255,255,255,0.3); color: #fff; }
 .btn-duplicate:hover { background-color: rgba(255,255,255,0.4); }
 .btn-duplicate:disabled { background-color: #333; cursor: not-allowed; }
@@ -967,50 +1005,27 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .btn-redo:hover { background-color: rgba(255,255,255,0.4); }
 .btn-redo:disabled { background-color: #333; cursor: not-allowed; }
 
-/* =====================================================
-   音ブロック
-   ===================================================== */
 .seq-chosen, .seq-drag, .seq-ghost { transform: scale(0.85); }
 .seq-ghost { opacity: 0.4; }
+.seq-ghost.group-ghost { opacity: 1 !important; transform: none !important; }
 
-.music-block {
-  width: 160px;
-  height: 160px;
-  border-radius: 4px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  cursor: grab;
-  position: relative;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-  border: 2px solid rgba(255,255,255,0.1);
-  transition: transform 0.1s, filter 0.1s, box-shadow 0.1s, outline 0.1s;
+.music-block { width: 160px; height: 160px; border-radius: 4px; display: flex; flex-direction: column; justify-content: center; align-items: center; cursor: grab; position: relative; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 2px solid rgba(255,255,255,0.1); transition: transform 0.1s, filter 0.1s, box-shadow 0.1s, outline 0.1s; }
+.music-block.active { filter: brightness(1.5); box-shadow: 0 0 15px #ffffff; border-color: #ffffff; transform: scale(1.05); z-index: 10; }
+.music-block.selected { outline: 2px solid rgba(255,255,255,0.8); outline-offset: 2px; }
+.music-block.anchor-start, .music-block.anchor-end { border-color: rgba(255,255,255,0.9); }
+/* proxy-chipsの高さ対応（ブロック高さ変更に伴う） */
+.music-block.is-group-proxy {
+  justify-content: flex-start;
+  padding-top: 28px;
 }
-
-.music-block.active       { filter: brightness(1.5); box-shadow: 0 0 15px #ffffff; border-color: #ffffff; transform: scale(1.05); z-index: 10; }
-.music-block.selected     { outline: 2px solid rgba(255,255,255,0.8); outline-offset: 2px; }
-.music-block.anchor-start,
-.music-block.anchor-end   { border-color: rgba(255,255,255,0.9); }
-.music-block.group-member { outline: 2px solid rgba(255,200,0,0.85); outline-offset: 2px; opacity: 0.35; pointer-events: none; }
-.music-block.is-group-proxy { background: #3a3a3a !important; border: 2px dashed rgba(255,255,255,0.7) !important; justify-content: center; padding-top: 28px; }
-.music-block.paint-mode   { cursor: crosshair; }
-
 .step-number { position: absolute; top: 4px; left: 6px; font-size: 0.8rem; font-weight: bold; color: rgba(255,255,255,0.5); }
-.sound-name { font-size: 1.2rem; font-weight: 900; color: #fff; text-shadow: 1px 1px 0 rgba(0,0,0,0.5); }
-.sound-name--vas { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); font-size: 1.0rem; white-space: nowrap; }
+.sound-name { position: absolute; font-size: 1.2rem; font-weight: 900; color: #fff; text-shadow: 1px 1px 0 rgba(0,0,0,0.5); }
+/* select { position: absolute !important; width: 17%; right: 6%; bottom: 8%; font-size: 0.8rem; background: rgba(255,255,255,0.5); color: #333; border: none; border-radius: 50px; cursor: pointer; } */
 
-.proxy-chips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; padding: 2px; }
-.proxy-chip  { width: 20px; height: 20px; border-radius: 3px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,0.35); }
-.proxy-chip span { font-weight: 900; font-size: 0.6rem; color: #fff; }
-
-/* =====================================================
-   カスタムドロップダウン
-   ===================================================== */
 .selectbox-wrapper {
   position: absolute !important;
   right: 6%;
-  bottom: 4%;
+  bottom: 8%;
 }
 
 .selectbox-trigger {
@@ -1018,8 +1033,8 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
   color: #333;
   border: none;
   border-radius: 50px;
-  width: 22px;
-  height: 18px;
+  width: 20px;
+  height: 16px;
   font-size: 7px;
   padding: 0;
   line-height: 16px;
@@ -1028,8 +1043,10 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
   align-items: center;
   justify-content: center;
 }
-.selectbox-trigger::after { content: ''; position: absolute; top: -6px; bottom: -10px; left: -6px; right: -10px; }
-.selectbox-trigger:hover { background: rgba(255,255,255,0.85); filter: none; }
+
+.selectbox-trigger:hover {
+  background: rgba(255,255,255,0.85);
+}
 
 .selectbox-dropdown {
   position: absolute;
@@ -1058,117 +1075,192 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
   cursor: pointer;
   text-align: center;
 }
-.selectbox-option:nth-child(2n)        { border-right: none; }
-.selectbox-option:nth-last-child(-n+2) { border-bottom: none; }
-.selectbox-option:hover                { background: rgba(255,255,255,0.15); filter: none; }
-.selectbox-option.is-selected          { background: rgba(255,255,255,0.25); }
 
-/* =====================================================
-   選択・削除ボタン
-   ===================================================== */
+.selectbox-option:nth-child(2n) {
+  border-right: none;
+}
+
+.selectbox-option:nth-last-child(-n+2) {
+  border-bottom: none;
+}
+
+.selectbox-option:hover {
+  background: rgba(255,255,255,0.15);
+  filter: none;
+}
+
+.selectbox-option.is-selected {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+}
+
 .btn-delete { position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.3); color: white; width: 20px; height: 20px; padding: 0; font-size: 12px; line-height: 20px; border-radius: 50%; }
 .btn-delete::after { content: ''; position: absolute; top: -6px; bottom: -6px; left: -6px; right: -6px; }
 .btn-delete:hover { background: rgba(255,0,0,0.7); }
-
-.btn-select-range { position: absolute !important; bottom: 3%; background: rgba(255,255,255,0.2); color: white; width: auto; padding: 0 8px; height: 20px; font-size: 10px; line-height: 20px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.3); }
+.btn-select-range { position: absolute !important; bottom: 6px; /* right: 6px; */ background: rgba(255,255,255,0.2); color: white; width: auto; padding: 0 8px; height: 20px; font-size: 10px; line-height: 20px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.3); }
 .btn-select-range::after { content: ''; position: absolute; top: -8px; bottom: -8px; left: -8px; right: -8px; }
-.btn-select-range:hover { background: rgba(255,255,255,0.9); color: #333; filter: none; }
+.btn-select-range:hover { background: rgba(255,255,255,0.9); color: #333; }
+.music-block.group-dragging { opacity: 0.2; pointer-events: none; }
+.music-block.group-member { outline: 2px solid rgba(255,200,0,0.85); outline-offset: 2px; opacity: 0.35; pointer-events: none; }
+.music-block.is-group-proxy { background: #3a3a3a !important; border: 2px dashed rgba(255,255,255,0.7) !important; justify-content: center; }
+.proxy-chips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; padding: 2px; }
+.proxy-chip { width: 20px; height: 20px; border-radius: 3px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,0.35); }
+.proxy-chip span { font-weight: 900; font-size: 0.6rem; color: #fff; }
+
+.sidebar-color-section { margin-top: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sidebar-color-section h3 { font-size: 1.0rem; margin: 0; text-align: center; }
+.sidebar-color-picker { width: 60px; height: 60px; border: none; border-radius: 8px; cursor: pointer; background: none; padding: 0; }
+.btn-end-paint { background: #e74c3c; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; width: 80px; }
+.btn-end-paint:hover { background: #c0392b; }
+.paint-hint { font-size: 0.65rem; color: #aaa; text-align: center; margin: 0; }
+.music-block.paint-mode { cursor: crosshair; }
+
+.survey-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.survey-modal { background: #333; padding: 40px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+.survey-modal p { margin: 0; font-size: 1.1rem; color: white; font-weight: bold; }
+.survey-hint { font-size: 0.85rem; color: #aaa; font-weight: normal !important; }
+.btn-survey-done { background: #4caf50; color: white; padding: 10px 30px; border-radius: 4px; }
+
+.phase-indicator { display: inline-flex; flex-direction: row; align-items: center; font-size: 0.9rem; font-weight: bold; gap: 8px; padding: 8px 16px; margin: 16px 0; border-radius: 8px; transition: background-color 0.5s; }
+.phase-display { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.phase-1 { background: rgba(76,175,80,0.3); border: 1px solid rgba(76,175,80,0.6); }
+.phase-2 { background: rgba(255,193,7,0.3); border: 1px solid rgba(255,193,7,0.6); }
+.phase-3 { background: rgba(255,87,34,0.3); border: 1px solid rgba(255,87,34,0.6); }
+.phase-4 { background: rgba(156,39,176,0.3); border: 1px solid rgba(156,39,176,0.6); }
+.phase-icon { margin-right: 4px; font-size: 1.1rem; }
+.phase-text { display: flex; flex-direction: column; gap: 2px; }
+.phase-end-time { font-size: 0.75rem; color: rgba(255,255,255,0.7); font-weight: normal; }
+
+.listening-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.8s ease-in-out; }
+.listening-modal { display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 40px; animation: fadeInUp 0.8s ease-in-out; }
+.listening-title { font-size: 1.6rem; font-weight: bold; color: white; margin: 0; }
+.listening-blocks { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+.listening-block { width: 80px; height: 80px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; border: 2px solid rgba(255,255,255,0.2); transition: transform 0.1s, filter 0.1s; }
+.listening-block:hover { filter: brightness(1.3); transform: scale(1.05); }
+.listening-block:active { transform: scale(0.95); }
+.listening-block-label { font-size: 1.8rem; font-weight: 900; color: white; text-shadow: 1px 1px 0 rgba(0,0,0,0.5); }
+.listening-warning { font-size: 1.1rem; color: #ff6b6b; font-weight: bold; margin: 0; animation: blink 1s ease-in-out infinite; }
+.listening-timer { font-size: 1.2rem; color: rgba(255,255,255,0.5); margin: 0; font-weight: bold; }
+
+@keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes blink    { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
 /* =====================================================
-   VAS バー表示（制作フェーズ）
+   ★ ヘルプ目次モーダル
    ===================================================== */
+.help-menu-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 980;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 
-/*
-  .vas-bars：ブロック全体を覆う絶対配置コンテナ。
-  上部パディング = 音名ラベル分、下部 = 削除ボタン分を避ける。
-*/
-.vas-bars {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+.help-menu-modal {
+  background: #1a1a2e;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 14px;
+  padding: 28px 32px;
+  min-width: 280px;
+  max-width: 400px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  padding: 32px 10px 28px;
-  box-sizing: border-box;
+  gap: 16px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+  max-height: 80vh;
+  overflow-y: auto;
 }
 
-/*
-  1行 = 左ラベル ─── トラック ─── 右ラベル の横一列レイアウト。
-  ラベルは flex-shrink:0 で固定幅、トラックは flex:1 で残り幅をすべて占有。
-  → 全項目のトラック幅が完全に統一される。
-*/
-/* 変更後 */
-.vas-bar-row {
-  position: relative;      /* ラベルのabsolute基準 */
-  width: 80%;
-  height: 11px;
-  flex-shrink: 0;
+.help-menu-title {
+  font-size: 1.05rem;
+  font-weight: bold;
+  color: #7eb8f7;
+  margin: 0;
+  text-align: center;
 }
 
-.vas-bar-label-left,
-.vas-bar-label-right {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 12px;
-  color: rgba(255,255,255,0.65);
-  white-space: nowrap;
-  line-height: 1;
-  pointer-events: none;
-}
-
-.vas-bar-label-left  { right: calc(100% + 4px); }  /* トラック左端の外側 */
-.vas-bar-label-right { left:  calc(100% + 4px); }  /* トラック右端の外側 */
-
-.vas-bar-track-wrap {
-  width: 100%;      /* 親(.vas-bar-row)の幅いっぱい・ラベルと無関係 */
-  height: 11px;
+.help-menu-list {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 8px;
+
 }
 
-.vas-bar-track {
-  width: 100%;
-  height: 3px;
-  background: rgba(255,255,255,0.25);
-  border-radius: 3px;
-  overflow: visible;
+.help-menu-item {
+  background: rgba(255,255,255,0.08);
+  color: white;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  text-align: left;
+  transition: background 0.15s;
+  font-weight: normal;
+}
+.help-menu-item:hover {
+  background: rgba(52, 152, 219, 0.35);
+  filter: none;
+}
+.help-menu-item:active {
+  background: rgba(52, 152, 219, 0.55);
+  transform: translateY(1px);
+  filter: none;
+}
+
+.help-menu-close {
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.6);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  align-self: center;
+}
+.help-menu-close:hover {
+  background: rgba(255,255,255,0.18);
+  filter: none;
+}
+
+/* チュートリアル暗幕 */
+.tutorial-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 930; pointer-events: none; }
+
+/* チュートリアルポップアップ */
+.tutorial-popover { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); background: #1a1a2e; border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; padding: 20px 24px; min-width: 320px; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); z-index: 970; pointer-events: auto; }
+.tutorial-title   { font-size: 1.0rem; font-weight: bold; color: #7eb8f7; margin: 0 0 8px 0; }
+.tutorial-message { font-size: 0.95rem; color: white; margin: 0 0 16px 0; line-height: 1.5; }
+.tutorial-footer  { display: flex; align-items: center; justify-content: space-between; }
+.tutorial-progress { font-size: 0.8rem; color: rgba(255,255,255,0.4); }
+.tutorial-footer-buttons { display: flex; align-items: center; gap: 8px; }
+.tutorial-btn { background: #3498db; color: white; padding: 8px 20px; border-radius: 6px; font-size: 0.9rem; }
+.tutorial-btn:hover { filter: brightness(1.2); }
+.tutorial-btn-cancel { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.6); padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; }
+.tutorial-btn-cancel:hover { background: rgba(255,255,255,0.22); color: rgba(255,255,255,0.9); filter: none; }
+.tutorial-action-hint { font-size: 0.8rem; color: rgba(255,255,255,0.5); font-style: italic; }
+
+/* ハイライト対象 */
+.tutorial-focus {
   position: relative;
+  z-index: 960 !important;
+  box-shadow: 0 0 0 4px rgba(52, 152, 219, 0.85), 0 0 24px rgba(52, 152, 219, 0.35) !important;
+  border-radius: 4px;
+  pointer-events: auto !important;
 }
 
-.vas-bar-fill {
-  height: 100%;
-  background: rgba(255,255,255,0.75);
-  border-radius: 3px;
-  position: relative;
-}
-
-/* つまみ：バー右端に追従、読み取り専用 */
-.vas-bar-thumb {
+/* 試聴ブロックのヒントテキスト */
+.listening-block-hint {
+  font-size: 0.6rem;
+  color: rgba(255,255,255,0.6);
   position: absolute;
-  top: 50%;
-  right: 0;
-  width: 9px;
-  height: 9px;
-  background: white;
-  border-radius: 50%;
-  transform: translate(50%, -50%);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
-  pointer-events: none;
+  bottom: 6px;
 }
+.listening-block { position: relative; }
 
-/* =====================================================
-   VAS モーダル（試聴フェーズ）
-   ===================================================== */
+/* VASモーダルオーバーレイ */
 .vas-overlay {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.75);
+  background: rgba(0,0,0,0.7);
   z-index: 1100;
   display: flex;
   align-items: center;
@@ -1187,9 +1279,25 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
   box-shadow: 0 12px 40px rgba(0,0,0,0.6);
 }
 
-.vas-modal-title { font-size: 1.1rem; font-weight: bold; color: #7eb8f7; margin: 0; text-align: center; }
-.vas-rows        { display: flex; flex-direction: column; gap: 14px; }
-.vas-row         { display: flex; align-items: center; gap: 10px; }
+.vas-modal-title {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: #7eb8f7;
+  margin: 0;
+  text-align: center;
+}
+
+.vas-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.vas-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 
 .vas-label-left,
 .vas-label-right {
@@ -1198,80 +1306,136 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
   min-width: 44px;
   white-space: nowrap;
 }
+
 .vas-label-left  { text-align: right; }
 .vas-label-right { text-align: left;  }
 
-.vas-slider    { flex: 1; accent-color: #7eb8f7; cursor: pointer; }
-.vas-close-btn { background: #3498db; color: white; padding: 10px 24px; border-radius: 8px; font-size: 0.95rem; align-self: center; }
+.vas-slider {
+  flex: 1;
+  accent-color: #7eb8f7;
+  cursor: pointer;
+  height: 4px;
+}
 
-/* =====================================================
-   アンケート
-   ===================================================== */
-.survey-overlay  { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-.survey-modal    { background: #333; padding: 40px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-.survey-modal p  { margin: 0; font-size: 1.1rem; color: white; font-weight: bold; }
-.survey-hint     { font-size: 0.85rem; color: #aaa; font-weight: normal !important; }
-.btn-survey-done { background: #4caf50; color: white; padding: 10px 30px; border-radius: 4px; }
+.vas-close-btn {
+  background: #3498db;
+  color: white;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  align-self: center;
+}
 
-/* =====================================================
-   フェーズ表示
-   ===================================================== */
-.phase-indicator { display: inline-flex; flex-direction: row; align-items: center; font-size: 0.9rem; font-weight: bold; gap: 8px; padding: 8px 16px; margin: 16px 0; border-radius: 8px; transition: background-color 0.5s; }
-.phase-display   { display: flex; flex-direction: row; align-items: center; gap: 8px; }
-.phase-1 { background: rgba(76,175,80,0.3);  border: 1px solid rgba(76,175,80,0.6);  }
-.phase-2 { background: rgba(255,193,7,0.3);  border: 1px solid rgba(255,193,7,0.6);  }
-.phase-3 { background: rgba(255,87,34,0.3);  border: 1px solid rgba(255,87,34,0.6);  }
-.phase-4 { background: rgba(156,39,176,0.3); border: 1px solid rgba(156,39,176,0.6); }
-.phase-icon     { margin-right: 4px; font-size: 1.1rem; }
-.phase-text     { display: flex; flex-direction: column; gap: 2px; }
-.phase-end-time { font-size: 0.75rem; color: rgba(255,255,255,0.7); font-weight: normal; }
+/* ブロック内VASバー表示 */
+.vas-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 70%;
+  padding: 4px 0;
+}
 
-/* =====================================================
-   試聴モード
-   ===================================================== */
-.listening-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 1000; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.8s ease-in-out; }
-.listening-modal   { display: flex; flex-direction: column; align-items: center; gap: 64px; padding: 40px; animation: fadeInUp 0.8s ease-in-out; }
-.listening-title   { font-size: 1.6rem; font-weight: bold; color: white; margin: 0; }
-.listening-blocks  { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
-.listening-block   { width: 80px; height: 80px; border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; border: 2px solid rgba(255,255,255,0.2); transition: transform 0.1s, filter 0.1s; position: relative; }
-.listening-block:hover  { filter: brightness(1.3); transform: scale(1.05); }
-.listening-block:active { transform: scale(0.95); }
-.listening-block-label  { font-size: 1.8rem; font-weight: 900; color: white; text-shadow: 1px 1px 0 rgba(0,0,0,0.5); }
-.listening-block-hint   { font-size: 1.0rem; font-weight: bold; color: rgba(255,255,255,0.6); margin: 0; bottom: 0px; text-align: center; line-height: 0; }
-.listening-warning { font-size: 1.1rem; color: #ff6b6b; font-weight: bold; margin: 0; animation: blink 1s ease-in-out infinite; }
-.listening-timer   { font-size: 1.2rem; color: rgba(255,255,255,0.5); margin: 0; font-weight: bold; }
+.vas-bar-row {
+  width: 100%;
+}
 
-@keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
-@keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes blink    { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.vas-bar-track {
+  width: 100%;
+  height: 5px;
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+  overflow: hidden;
+}
 
-/* =====================================================
-   ヘルプ目次モーダル
-   ===================================================== */
-.help-menu-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 980; display: flex; align-items: center; justify-content: center; }
-.help-menu-modal   { background: #1a1a2e; border: 1px solid rgba(255,255,255,0.15); border-radius: 14px; padding: 28px 32px; min-width: 280px; max-width: 400px; max-height: 80vh; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
-.help-menu-title   { font-size: 1.05rem; font-weight: bold; color: #7eb8f7; margin: 0; text-align: center; }
-.help-menu-list    { display: flex; flex-direction: column; gap: 8px; }
-.help-menu-item    { background: rgba(255,255,255,0.08); color: white; padding: 10px 16px; border-radius: 8px; font-size: 0.95rem; text-align: left; transition: background 0.15s; font-weight: normal; }
-.help-menu-item:hover  { background: rgba(52,152,219,0.35); filter: none; }
-.help-menu-item:active { background: rgba(52,152,219,0.55); transform: translateY(1px); filter: none; }
-.help-menu-close       { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); padding: 8px 16px; border-radius: 8px; font-size: 0.9rem; align-self: center; }
-.help-menu-close:hover { background: rgba(255,255,255,0.18); filter: none; }
+.vas-bar-fill {
+  height: 100%;
+  background: rgba(255,255,255,0.85);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
 
-/* =====================================================
-   チュートリアル
-   ===================================================== */
-.tutorial-overlay  { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 930; pointer-events: none; }
-.tutorial-popover  { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); background: #1a1a2e; border: 1px solid rgba(255,255,255,0.2); border-radius: 12px; padding: 20px 24px; min-width: 320px; max-width: 480px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); z-index: 970; pointer-events: auto; }
-.tutorial-title    { font-size: 1.0rem; font-weight: bold; color: #7eb8f7; margin: 0 0 8px 0; }
-.tutorial-message  { font-size: 0.95rem; color: white; margin: 0 0 16px 0; line-height: 1.5; }
-.tutorial-footer   { display: flex; align-items: center; justify-content: space-between; }
-.tutorial-progress { font-size: 0.8rem; color: rgba(255,255,255,0.4); }
-.tutorial-footer-buttons { display: flex; align-items: center; gap: 8px; }
-.tutorial-btn        { background: #3498db; color: white; padding: 8px 20px; border-radius: 6px; font-size: 0.9rem; }
-.tutorial-btn:hover  { filter: brightness(1.2); }
-.tutorial-btn-cancel { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.6); padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; }
-.tutorial-btn-cancel:hover { background: rgba(255,255,255,0.22); color: rgba(255,255,255,0.9); filter: none; }
-.tutorial-action-hint { font-size: 0.8rem; color: rgba(255,255,255,0.5); font-style: italic; }
-.tutorial-focus { position: relative; z-index: 960 !important; box-shadow: 0 0 0 4px rgba(52,152,219,0.85), 0 0 24px rgba(52,152,219,0.35) !important; border-radius: 4px; pointer-events: auto !important; }
+/* VASトグルボタン */
+.btn-vas-toggle {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(255,255,255,0.2);
+  color: white;
+  width: auto;
+  padding: 0 7px;
+  height: 20px;
+  font-size: 12px;
+  line-height: 20px;
+  border-radius: 50px;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+
+.btn-vas-toggle::after {
+  content: '';
+  position: absolute;
+  top: -8px; bottom: -8px; left: -8px; right: -8px;
+}
+
+.btn-vas-toggle:hover  { background: rgba(255,255,255,0.9); color: #333; filter: none; }
+.btn-vas-toggle.active { background: rgba(255,255,255,0.75); color: #333; }
+
+/* VASバー：ラベル行追加 */
+.vas-bar-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.vas-bar-label-left,
+.vas-bar-label-right {
+  font-size: 12px;
+  color: rgba(255,255,255,0.6);
+  line-height: 1;
+}
+
+/* vas-bars の上部余白調整（sound-nameの下に来るよう） */
+.vas-bars {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;        /* 4px → 6px */
+  width: 80%;      /* 70% → 80% */
+  padding: 4px 0;
+  margin-top: 24px; /* sound-name分の余白 */
+}
+
+/* サイドバーVASセクション */
+.sidebar-vas-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.btn-vas-mode {
+  background: rgba(255,255,255,0.15);
+  color: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  width: 80px;
+  transition: background 0.15s;
+}
+
+.btn-vas-mode:hover {
+  background: rgba(255,255,255,0.25);
+  filter: none;
+}
+
+.btn-vas-mode.active {
+  background: rgba(126,184,247,0.35);
+  border: 1px solid rgba(126,184,247,0.6);
+  color: #7eb8f7;
+}
+
+.btn-vas-mode:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 </style>
