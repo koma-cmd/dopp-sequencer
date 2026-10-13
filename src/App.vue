@@ -1,7 +1,21 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from 'vue';
+import { useLogger } from './useLogger';
 import draggable from 'vuedraggable';
 import * as Tone from 'tone';
+import { storage } from './firebase';
+import { ref as storageRef, uploadBytes } from 'firebase/storage';
+import { EXPERIMENT_CONFIG } from './constants/config';
+import PreSurveyModal from './components/PreSurveyModal.vue';
+import PostSurveyModal from './components/PostSurveyModal.vue';
+import PaletteColorModal from './components/PaletteColorModal.vue';
+import VasRatingModal from './components/VasRatingModal.vue';
+import VasBars from './components/VasBars.vue';
+import {
+  createDefaultPreSurvey,
+  createDefaultPostSurvey,
+  buildPostSurveyItems,
+} from './constants/surveyItems';
 
 const soundPalette = ref([
   { sound: 'A', label: 'Sound A', color: '#555555' },
@@ -46,7 +60,7 @@ const cloneSound = (origin) => ({ ...origin, id: nextId.value++, isPlaying: fals
 // =====================================================
 const undoStack = ref([]);
 const redoStack = ref([]);
-const MAX_HISTORY = 50;
+const MAX_HISTORY = EXPERIMENT_CONFIG.maxUndoHistory;
 
 const snapshotState = () => ({
   noteBlocks: noteBlocks.value.map(b => ({ id: b.id, sound: b.sound, color: b.color, isPlaying: false })),
@@ -78,6 +92,7 @@ const undo = () => {
   redoStack.value.push(current);
   restoreState(prev);
   if (currentTutorial.value?.id === 'undo') advanceTutorial();
+  logUndoRedo('undo'); incrementOps();  // ★追加
 };
 
 const redo = () => {
@@ -88,6 +103,7 @@ const redo = () => {
   undoStack.value.push(current);
   restoreState(next);
   if (currentTutorial.value?.id === 'redo') advanceTutorial();
+  logUndoRedo('redo'); incrementOps();  // ★追加
 };
 
 const onKeydown = (e) => {
@@ -125,6 +141,10 @@ const selectionInfo = computed(() => {
 const clearSelection = () => { selectionStartId.value = null; selectionEndId.value = null; awaitingEnd.value = false; };
 
 const setRangePoint = (blockId) => {
+  if (
+    awaitingEnd.value && selectionStartId.value === blockId && selectionEndId.value == null) {
+    clearSelection(); return;
+  }
   if (selectionStartId.value == null || (selectionEndId.value != null && !awaitingEnd.value)) {
     selectionStartId.value = blockId; selectionEndId.value = null; awaitingEnd.value = true; return;
   }
@@ -205,27 +225,59 @@ const playSelectedOrAll = async () => {
   const blocks = getBlocksForPlayOrExport();
   if (!blocks.length) return;
   await playBlocksSequentially(blocks);
+  const scope = selectionInfo.value.has ? 'selection' : 'all';
+  logPlay(scope, blocks.map(b => b.sound));
+  playCount.value++;
+  // 再生時にスナップショット保存（編集なし連続再生はスキップ）
+  logSequenceSnapshot(false);
+  incrementOps();
 };
+// const playSelectedOrAll = async () => {
+//   stopSequence();
+//   const blocks = getBlocksForPlayOrExport();
+//   if (!blocks.length) return;
+//   await playBlocksSequentially(blocks);
+// };
 
 const stopSequence = () => {
   players.stopAll();
   Tone.Draw.cancel();
   noteBlocks.value.forEach(block => { block.isPlaying = false; });
+  if (currentPhase.value > 0) logStop();
 };
+// const stopSequence = () => {
+//   players.stopAll();
+//   Tone.Draw.cancel();
+//   noteBlocks.value.forEach(block => { block.isPlaying = false; });
+// };
 
-const previewSound = (block) => {
+const previewSound = (block, source = 'block') => {
   if (!isSoundEnabled.value) return;
+  Tone.start(); // リロード直後はAudioContextがsuspendedのため、クリック時に再開させる
   if (players.has(block.sound)) {
     players.player(block.sound).start();
     block.isPlaying = true;
     setTimeout(() => { block.isPlaying = false; }, 200);
   }
-  if (isListeningMode.value) openVasModal(block.sound);
+  if (isListeningMode.value && vasEnabled.value) openVasModal(block.sound);
+  // 制作フェーズ中のみログ（試聴フェーズは除外）
+  if (currentPhase.value > 0) logSoundPreview(block.sound, source);
 };
+// パレットアイテムのクリックは source='palette' で呼ぶ:
+// template側: @click="previewSound(element, 'palette')"
+// const previewSound = (block) => {
+//   if (!isSoundEnabled.value) return;
+//   if (players.has(block.sound)) {
+//     players.player(block.sound).start();
+//     block.isPlaying = true;
+//     setTimeout(() => { block.isPlaying = false; }, 200);
+//   }
+//   if (isListeningMode.value && vasEnabled.value) openVasModal(block.sound);
+// };
 
-const onBlockClick = (block) => {
+const onBlockClick = (block, event) => {
   // ボタン・セレクト系要素からのクリックは無視
-  const ignored = event.target.closest(
+  const ignored = event?.target?.closest(
     'button, select, .selectbox-wrapper, .selectbox-dropdown, .selectbox-trigger, .selectbox-option'
   );
   if (ignored) return;
@@ -236,13 +288,26 @@ const onBlockClick = (block) => {
 // =====================================================
 // ■ ブロック操作
 // =====================================================
-const onPaletteAdd = () => {
+const onPaletteAdd = (evt) => {
   pushHistoryFromPreSnapshot();
   if (currentTutorial.value?.id === 'sound_palette') advanceTutorial();
+  // 追加されたブロックの情報を取得
+  const newIndex = evt.newIndex;
+  const newBlock = noteBlocks.value[newIndex];
+  if (newBlock) logBlockAdd(newBlock.id, newBlock.sound);
+  incrementOps();
 };
 
+// const onPaletteAdd = () => {
+//   pushHistoryFromPreSnapshot();
+//   if (currentTutorial.value?.id === 'sound_palette') advanceTutorial();
+// };
+
 const palettePreSnapshot = ref(null);
-const onPaletteDragStart = () => { palettePreSnapshot.value = snapshotState(); };
+const onPaletteDragStart = () => {
+  palettePreSnapshot.value = snapshotState();
+  isDragDemoVisible.value = false;
+};
 
 const pushHistoryFromPreSnapshot = () => {
   if (!palettePreSnapshot.value) return;
@@ -252,37 +317,82 @@ const pushHistoryFromPreSnapshot = () => {
   palettePreSnapshot.value = null;
 };
 
-const removeBlock = (index) => { pushHistory(); noteBlocks.value.splice(index, 1); };
+const removeBlock = (index) => {
+  const blockId = noteBlocks.value[index]?.id;
+  pushHistory();
+  noteBlocks.value.splice(index, 1);
+  if (blockId != null) logBlockDelete([blockId]);
+  incrementOps();
+};
+// const removeBlock = (index) => { pushHistory(); noteBlocks.value.splice(index, 1); };
 
 const duplicateSelection = () => {
   const info = selectionInfo.value;
   if (!info.has) return;
   pushHistory();
   const segment = noteBlocks.value.slice(info.startIndex, info.endIndex + 1);
+  const originalIds = segment.map(b => b.id);
   const clones = segment.map(b => ({ ...b, id: nextId.value++, isPlaying: false }));
   noteBlocks.value.splice(info.endIndex + 1, 0, ...clones);
+  const newIds = clones.map(b => b.id);
   if (currentTutorial.value?.id === 'select_button') {
     tutorialDuplicateDone.value = true;
     noteBlocksCountAtDuplicate.value = noteBlocks.value.length;
   }
+  logBlockDuplicate(originalIds, newIds);
+  incrementOps();
 };
+// const duplicateSelection = () => {
+//   const info = selectionInfo.value;
+//   if (!info.has) return;
+//   pushHistory();
+//   const segment = noteBlocks.value.slice(info.startIndex, info.endIndex + 1);
+//   const clones = segment.map(b => ({ ...b, id: nextId.value++, isPlaying: false }));
+//   noteBlocks.value.splice(info.endIndex + 1, 0, ...clones);
+//   if (currentTutorial.value?.id === 'select_button') {
+//     tutorialDuplicateDone.value = true;
+//     noteBlocksCountAtDuplicate.value = noteBlocks.value.length;
+//   }
+// };
 
 const deleteSelection = () => {
   const info = selectionInfo.value;
   if (!info?.has) return;
+  const ids = noteBlocks.value.slice(info.startIndex, info.endIndex + 1).map(b => b.id);
   pushHistory();
   noteBlocks.value.splice(info.startIndex, info.endIndex - info.startIndex + 1);
   clearSelection();
   if (currentTutorial.value?.id === 'select_button' && tutorialDuplicateDone.value) advanceTutorial();
+  logBlockDelete(ids);
+  incrementOps();
 };
+// const deleteSelection = () => {
+//   const info = selectionInfo.value;
+//   if (!info?.has) return;
+//   pushHistory();
+//   noteBlocks.value.splice(info.startIndex, info.endIndex - info.startIndex + 1);
+//   clearSelection();
+//   if (currentTutorial.value?.id === 'select_button' && tutorialDuplicateDone.value) advanceTutorial();
+// };
+
 
 const setBlockSound = (id, newSound) => {
   const b = noteBlocks.value.find(x => x.id === id);
   if (!b || b.sound === newSound) return;
+  const fromSound = b.sound;
   pushHistory();
   b.sound = newSound;
   if (currentTutorial.value?.id === 'select_box') advanceTutorial();
+  logSoundChange(id, fromSound, newSound);
+  incrementOps();
 };
+// const setBlockSound = (id, newSound) => {
+//   const b = noteBlocks.value.find(x => x.id === id);
+//   if (!b || b.sound === newSound) return;
+//   pushHistory();
+//   b.sound = newSound;
+//   if (currentTutorial.value?.id === 'select_box') advanceTutorial();
+// };
 
 const paintColor = ref(null);
 const isPaintMode = ref(false);
@@ -297,11 +407,42 @@ const endPaintMode = () => {
   if (currentTutorial.value?.id === 'color_palette') advanceTutorial();
 };
 
+
+// =====================================================
+// ■ パレット色変更モーダル（制作フェーズ）
+// =====================================================
+const paletteColorModalTarget = ref(null); // { sound, color }
+
+const openPaletteColorModal = (item) => {
+  // if (currentPhase.value < 1) return; // 制作フェーズ以外は無効
+  paletteColorModalTarget.value = { sound: item.sound, color: item.color };
+};
+
+const closePaletteColorModal = () => {
+  paletteColorModalTarget.value = null;
+  if (currentTutorial.value?.id === 'closePaletteColorModal') advanceTutorial();
+};
+
+const applyPaletteColor = (color) => {
+  if (!paletteColorModalTarget.value) return;
+  const sound = paletteColorModalTarget.value.sound;
+  // パレット自体の色を更新
+  const paletteItem = soundPalette.value.find(p => p.sound === sound);
+  if (paletteItem) paletteItem.color = color;
+  // 作業スペース内の同じ音のブロックにも反映
+  noteBlocks.value
+    .filter(b => b.sound === sound && !b.colorOverridden)
+    .forEach(b => { b.color = color; });
+  paletteColorModalTarget.value.color = color;
+};
+
+
 const setBlockColor = (id, newColor) => {
   const b = noteBlocks.value.find(x => x.id === id);
   if (!b || b.color === newColor) return;
   pushHistory();
   b.color = newColor;
+  b.colorOverridden = true; // 個別上書きフラグ
 };
 
 const exportAudio = async () => {
@@ -325,7 +466,8 @@ const exportAudio = async () => {
   downloadWav(buffer);
 };
 
-const downloadWav = (audioBuffer) => {
+// AudioBufferをWAV形式のBlobに変換する（ローカル保存・クラウド保存で共通利用）
+const encodeWavBlob = (audioBuffer) => {
   const numOfChan = audioBuffer.numberOfChannels;
   const length = audioBuffer.length * numOfChan * 2 + 44;
   const buffer = new ArrayBuffer(length);
@@ -347,14 +489,64 @@ const downloadWav = (audioBuffer) => {
     }
     pos++;
   }
-  const blob = new Blob([buffer], { type: "audio/wav" });
+  function setUint16(data) { view.setUint16(pos, data, true); pos += 2; }
+  function setUint32(data) { view.setUint32(pos, data, true); pos += 4; }
+  return new Blob([buffer], { type: "audio/wav" });
+};
+
+// 「⬇ 保存」ボタン用：参加者自身のPCにローカル保存するだけ（クラウドには送らない）
+const downloadWav = (audioBuffer) => {
+  const blob = encodeWavBlob(audioBuffer);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   document.body.appendChild(anchor); anchor.style = "display: none";
   anchor.href = url; anchor.download = "my_sequence.wav"; anchor.click();
+  document.body.removeChild(anchor);
   window.URL.revokeObjectURL(url);
-  function setUint16(data) { view.setUint16(pos, data, true); pos += 2; }
-  function setUint32(data) { view.setUint32(pos, data, true); pos += 4; }
+};
+
+// アンケート開始時の自動保存用：管理者のFirebase Storageへアップロードし、
+// 保存先パスをFirestoreの sessions/{sessionId} ドキュメントにも記録する。
+// パスは sessionId 単位で固定する（Date.now() を入れない）。
+//
+// 【Storageセキュリティルールとの関係】
+//   ・read  : 禁止 → getDownloadURL / getMetadata はクライアントから使えない（呼ぶと unauthorized）。
+//             そのため URL は取得せず、パスだけを Firestore に記録する。
+//   ・update: 禁止 → 同じパスへの2回目以降のアップロードは storage/unauthorized で拒否される（先勝ち）。
+//   ・create: 20MB未満 かつ contentType が audio/* のときのみ許可。
+//
+// 戻り値：保存済みになったら true、そうでなければ false（呼び出し側の recordingUploaded フラグ管理に使う）。
+const MAX_RECORDING_BYTES = 20 * 1024 * 1024; // Storageルールの create 条件と揃える
+const uploadRecordingToCloud = async (audioBuffer) => {
+  const blob = encodeWavBlob(audioBuffer);
+  const sid = sessionId || 'unknown_session';
+  const path = `recordings/${sid}.wav`;
+
+  // ルールの上限を超えると「unauthorized」になり、既存ファイルとの区別がつかなくなるため、事前に検出する
+  if (blob.size >= MAX_RECORDING_BYTES) {
+    console.error(`録音が上限(20MB)を超えているためアップロードできません: ${(blob.size / 1024 / 1024).toFixed(1)}MB`);
+    return false;
+  }
+
+  try {
+    await uploadBytes(storageRef(storage, path), blob, { contentType: 'audio/wav' });
+  } catch (e) {
+    // 上書き禁止ルールで拒否された場合：以前のアップロードが成功済みなら「保存済み」とみなす
+    if (e?.code === 'storage/unauthorized' && await hasRecordingRecord()) {
+      console.info('録音は保存済みのため、再送をスキップしました:', path);
+      return true;
+    }
+    console.error('録音のクラウド保存に失敗しました:', e);
+    return false;
+  }
+
+  // ここに来た時点でファイルは保存済み。Firestoreへの記録に失敗しても、ファイルは残っている。
+  try {
+    await logRecordingUploaded(null, path);
+  } catch (e) {
+    console.error('録音パスのFirestore記録に失敗しました（ファイル自体は保存済み）:', e);
+  }
+  return true;
 };
 
 // =====================================================
@@ -397,6 +589,9 @@ const onSeqDragEnd = async (evt) => {
       redoStack.value = []; _singleDragPreSnapshot = null;
     }
     if (currentTutorial.value?.id === 'work_space') advanceTutorial();
+    // ★ 単体移動ログ
+    const draggedId = Number(evt.item?.dataset?.id);
+    if (draggedId) { logBlockMove([draggedId], evt.newIndex); incrementOps(); }
     groupDragActive.value = false; groupSegmentIds.value = []; groupDraggedId.value = null;
     return;
   }
@@ -419,7 +614,41 @@ const onSeqDragEnd = async (evt) => {
   selectionStartId.value = segmentIds[0] ?? null;
   selectionEndId.value   = segmentIds[segmentIds.length - 1] ?? null;
   awaitingEnd.value = false;
+  // ★ グループ移動ログ
+  logBlockMove(segmentIds, insertAt); incrementOps();
 };
+// const onSeqDragEnd = async (evt) => {
+//   document.querySelectorAll('[data-hidden-by-group]').forEach(el => { el.style.display = ''; delete el.dataset.hiddenByGroup; });
+//   if (!_gState) {
+//     if (_singleDragPreSnapshot) {
+//       undoStack.value.push(_singleDragPreSnapshot);
+//       if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift();
+//       redoStack.value = []; _singleDragPreSnapshot = null;
+//     }
+//     if (currentTutorial.value?.id === 'work_space') advanceTutorial();
+//     groupDragActive.value = false; groupSegmentIds.value = []; groupDraggedId.value = null;
+//     return;
+//   }
+//   const { segmentIds, preSnapshot } = _gState;
+//   const segmentSet = new Set(segmentIds);
+//   let prevId = null;
+//   let sib = evt.item?.previousElementSibling;
+//   while (sib) { const sid = Number(sib.dataset?.id); if (sid && !segmentSet.has(sid)) { prevId = sid; break; } sib = sib.previousElementSibling; }
+//   _gState = null; groupDragActive.value = false; groupSegmentIds.value = []; groupDraggedId.value = null;
+//   await nextTick();
+//   undoStack.value.push(preSnapshot);
+//   if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift();
+//   redoStack.value = [];
+//   const snap = preSnapshot.noteBlocks;
+//   const base = snap.filter(b => !segmentSet.has(b.id)).map(b => ({ ...b, isPlaying: false }));
+//   const segs = segmentIds.map(id => snap.find(b => b.id === id)).filter(Boolean).map(b => ({ ...b, isPlaying: false }));
+//   const insertAt = prevId === null ? 0 : (() => { const idx = base.findIndex(b => b.id === prevId); return idx === -1 ? base.length : idx + 1; })();
+//   base.splice(insertAt, 0, ...segs);
+//   noteBlocks.value = base;
+//   selectionStartId.value = segmentIds[0] ?? null;
+//   selectionEndId.value   = segmentIds[segmentIds.length - 1] ?? null;
+//   awaitingEnd.value = false;
+// };
 
 // =====================================================
 // ■ カスタムドロップダウン
@@ -433,39 +662,222 @@ const onDocClick     = () => { openDropdownId.value = null; };
 // ■ VAS データ
 // =====================================================
 const vasLabels = [
-  { key: 'high_low',     left: '高',     right: '低'   },
-  { key: 'short_long',   left: '短',     right: '長'   },
-  { key: 'soft_hard',    left: '柔',  right: '硬'  },
-  { key: 'hot_cold',     left: '熱',     right: '冷' },
-  { key: 'rough_smooth', left: '荒',     right: '滑' },
+  { key: 'hard_soft',     left: '硬い',     right: '柔らかい'   },
+  { key: 'strong_weak',   left: '強い',     right: '弱い'   },
+  { key: 'bright_dark',    left: '明るい',  right: '暗い'  },
+  { key: 'activity_temporal',     left: '動的',     right: '静的' },
+  { key: 'rough_smooth', left: '粗い',     right: '滑らか' },
 ];
 
-const defaultVas = () => ({ high_low: 50, short_long: 50, soft_hard: 50, hot_cold: 50, rough_smooth: 50 });
+const defaultVas = () => ({ hard_soft: 50, strong_weak: 50, bright_dark: 50, activity_temporal: 50, rough_smooth: 50 });
 
 const vasData = ref(
   Object.fromEntries(['A','B','C','D','E','F','G','H'].map(s => [s, defaultVas()]))
 );
 
+// VasRatingModal からのスライダー変更を反映する
+const setVasRating = (sound, key, value) => {
+  if (vasData.value[sound]) vasData.value[sound][key] = value;
+};
+
+// =====================================================
+// ■ 実験条件・事前/事後アンケート
+// =====================================================
+
+// const preSurveyOpenedAt  = ref(null);
+// const postSurveyOpenedAt = ref(null);
+
+const experimentCondition = ref(null); // 'vas' | 'no_vas'
+const assignedStratum = ref(null);
+const vasEnabled = computed(() => experimentCondition.value === 'vas');
+
+const isPreSurveyMode = ref(true);
+const isAssigningCondition = ref(false);
+const preSurveyError = ref('');
+const preSurvey = ref(createDefaultPreSurvey());
+
+const stratum = computed(() => {
+  if (preSurvey.value.musicExperience === 'yes') return 'music_experience_yes';
+  if (preSurvey.value.musicExperience === 'no') return 'music_experience_no';
+  //return null;
+  return 'all';
+});
+
+const postSurvey = ref(createDefaultPostSurvey());
+const postSurveyItems = computed(() => buildPostSurveyItems(vasEnabled.value));
+const postSurveyError = ref('');
+const isSubmittingPostSurvey = ref(false);
+const postSurveySubmitted = ref(false);
+
+// ★ リロードを跨いで保持する「実験の進行フラグ」（localStorageの進行状態に含める）
+//   surveyOpened      : 事後アンケートを開いた際のログ送信（open時刻・最終スナップショット）を開始済みか
+//   recordingUploaded : 完成音源のアップロードが成功済みか
+// これらが true のとき、リロード後に openSurvey の中身（ログ送信・録音生成）を再実行しない。
+const surveyOpened = ref(false);
+const recordingUploaded = ref(false);
+
+const {
+  sessionId,
+  userId,
+  totalOperations,
+  incrementOps,
+  touchAction,
+  tutorialEndedAt,
+  restoreTimers,
+  setLoggingEnabled,
+  assignConditionByStratum,
+  logPreSurvey,
+  logPostSurvey,
+  logPreSurveyOpen,
+  logPostSurveyOpen,
+  logSessionStart,
+  logTutorialEnd,
+  logBlockAdd,
+  logBlockMove,
+  logBlockDelete,
+  logSoundChange,
+  logBlockDuplicate,
+  logSoundPreview,
+  logPlay,
+  logStop,
+  logUndoRedo,
+  logHelpOpen,
+  logSequenceSnapshot,
+  logRecordingUploaded,
+  hasRecordingRecord,
+} = useLogger({ vasEnabled, noteBlocks, players });
+
+const submitPreSurvey = async () => {
+  preSurveyError.value = '';
+
+  // if (!preSurvey.value.musicExperience) {
+  //   preSurveyError.value = '楽曲制作経験の有無を選択してください。';
+  //   return;
+  // }
+  // if (preSurvey.value.musicExperience === 'yes'
+  //     && preSurvey.value.musicExperienceTypes.length === 0) {
+  //   preSurveyError.value = 'Q1-aで経験した内容を1つ以上選択してください。';
+  //   return;
+  // }
+
+  // if (preSurvey.value.musicExperience === 'yes') {
+  //   for (const g of preSurvey.value.musicExperienceTypes) {
+  //     const d = preSurvey.value.musicExperienceDetails[g];
+  //     const label = musicExperienceOptions.find(o => o.value === g)?.label;
+  //     if (!d.category || !d.times) {
+  //       preSurveyError.value = `Q1-a「${label}」の追加設問にも回答してください。`;
+  //       return;
+  //     }
+  //   }
+  // }
+
+  // if (preSurvey.value.knewElectroacoustic == null) {
+  //    preSurveyError.value = '電子音響音楽の認知度を選択してください。';
+  //    return;
+  // }
+  if (preSurvey.value.agreeTerms !== 'yes') {
+    preSurveyError.value = '利用規約に同意してください。';
+    return;
+  }
+
+    try {
+    isAssigningCondition.value = true;
+
+    // ★ 3つのフィールドをまとめて定義
+    const preSurveyData = {
+      musicExperience:      preSurvey.value.musicExperience,
+      musicExperienceTypes: preSurvey.value.musicExperience === 'yes'
+        ? [...preSurvey.value.musicExperienceTypes]
+        : [],
+      musicExperienceOther: preSurvey.value.musicExperienceTypes.includes('other')
+        ? preSurvey.value.musicExperienceOther.trim()
+        : '',
+      musicExperienceDetails: preSurvey.value.musicExperience === 'yes'
+        ? preSurvey.value.musicExperienceTypes.map(g => ({
+            genre:     g,
+            category:  preSurvey.value.musicExperienceDetails[g].category,
+            frequency: preSurvey.value.musicExperienceDetails[g].times,
+          }))
+        : [],
+      // musicExperienceYears: preSurvey.value.musicExperience === 'yes'
+      //   ? (preSurvey.value.musicExperienceYears !== '' ? Number(preSurvey.value.musicExperienceYears) : null)
+      //   : null,
+      // knewElectroacoustic:  preSurvey.value.knewElectroacoustic,
+      agreeTerms:           preSurvey.value.agreeTerms,
+    };
+
+    // ★ preSurveyData をそのまま渡す（経験年数・認知度も含む）
+    const assignment = await assignConditionByStratum(stratum.value, preSurveyData);
+
+    experimentCondition.value = assignment.condition;
+    assignedStratum.value = assignment.stratum;
+
+    // ★ logPreSurvey にも全フィールドを渡す
+    await logPreSurvey({
+      ...preSurveyData,
+      stratum:    assignment.stratum,
+      condition:  assignment.condition,
+      vasEnabled: assignment.condition === 'vas',
+      // response_time_ms:  Date.now() - preSurveyOpenedAt.value, 
+    });
+
+    isPreSurveyMode.value = false;
+    persistProductionState(true); // 割付結果を即座に保存（チュートリアル開始前のリロード対策）
+    setTimeout(() => startTutorial(), 500);
+  } catch (error) {
+    console.error(error);
+    preSurveyError.value = '割付処理に失敗しました。通信状況を確認してもう一度お試しください。';
+  } finally {
+    isAssigningCondition.value = false;
+  }
+};
+
 const vasModalTarget = ref(null);
-const openVasModal   = (sound) => { vasModalTarget.value = sound; };
+const openVasModal   = (sound) => { if (vasEnabled.value) vasModalTarget.value = sound; };
 const closeVasModal  = () => { vasModalTarget.value = null; };
 
 // =====================================================
 // ■ VAS 表示モード（制作フェーズ・全ブロック一括）
 // =====================================================
 const isVasMode   = ref(false);
-const toggleVasMode = () => { isVasMode.value = !isVasMode.value; };
+const toggleVasMode = () => {
+  if (!vasEnabled.value) return;
+  isVasMode.value = !isVasMode.value;
+};
+// 「VAS条件で、かつ表示モードがON」。テンプレートの複数箇所で使う。
+const isVasDisplay = computed(() => vasEnabled.value && isVasMode.value);
+
+// ドロップダウンに並べる音名（パレットから導出。音が増減してもここは直さなくてよい）
+const soundNames = computed(() => soundPalette.value.map(p => p.sound));
 
 // =====================================================
 // ■ アンケート
 // =====================================================
 const isSurveyMode  = ref(false);
-const openSurvey    = async () => {
-  isSurveyMode.value = true;
-  window.open('https://docs.google.com/forms/d/e/1FAIpQLSd4lACT6GimL9OloSUs5k7LjG8LivXz6VyGZOqIcZnLq6Sguw/viewform?usp=header', '_blank');
-  // 全体を自動保存（選択範囲を無視して全ブロック対象）
-  if (noteBlocks.value.length > 0 && isLoaded.value) {
-    const allBlocks = noteBlocks.value;
+
+// playFrequency は再生イベントのカウントを別途 ref で持って渡してください
+const playCount = ref(0);  // ← script setup に追加
+
+
+// playSelectedOrAll 内でインクリメント
+// playCount.value++;
+
+// 読み込み完了(isLoaded)まで待つ。リロード直後は音声素材の読み込み前に呼ばれうるため。
+const waitUntilLoaded = () => new Promise((resolve) => {
+  if (isLoaded.value) { resolve(); return; }
+  const stop = watch(isLoaded, (loaded) => { if (loaded) { stop(); resolve(); } });
+});
+
+// 完成音源を書き出してアップロードする。アップロード成功済みなら何もしない（冪等）。
+// リロード復元時の「アンケート中に途切れたアップロードのやり直し」にも使う。
+let isUploadingRecording = false;
+const ensureRecordingUploaded = async () => {
+  if (recordingUploaded.value || isUploadingRecording) return;
+  if (noteBlocks.value.length === 0) return;
+  isUploadingRecording = true;
+  try {
+    await waitUntilLoaded();
+    const allBlocks = noteBlocks.value.slice();
     let totalDuration = 0;
     allBlocks.forEach(block => {
       if (players.has(block.sound)) {
@@ -473,40 +885,175 @@ const openSurvey    = async () => {
         totalDuration += p.loaded ? p.buffer.duration : 0;
       }
     });
-    if (totalDuration > 0) {
-      totalDuration += 1.0;
-      const buffer = await Tone.Offline(() => {
-        let timeOffset = 0;
-        allBlocks.forEach(block => {
-          if (players.has(block.sound)) {
-            const originalBuffer = players.player(block.sound).buffer;
-            const source = new Tone.BufferSource(originalBuffer).toDestination();
-            source.start(timeOffset);
-            timeOffset += originalBuffer.duration;
-          }
-        });
-      }, totalDuration);
-      downloadWav(buffer);
+    if (totalDuration <= 0) return;
+    totalDuration += 1.0;
+    // 第3引数に1を指定し、素材がモノラルなことに合わせてモノラルで書き出す
+    // （省略するとTone.jsの既定値であるステレオ(2ch)になり、保存容量が倍になる）
+    const buffer = await Tone.Offline(() => {
+      let timeOffset = 0;
+      allBlocks.forEach(block => {
+        if (players.has(block.sound)) {
+          const originalBuffer = players.player(block.sound).buffer;
+          const source = new Tone.BufferSource(originalBuffer).toDestination();
+          source.start(timeOffset);
+          timeOffset += originalBuffer.duration;
+        }
+      });
+    }, totalDuration, 1);
+    const ok = await uploadRecordingToCloud(buffer);
+    if (ok) {
+      recordingUploaded.value = true;
+      persistProductionState(true);
     }
+  } catch (error) {
+    console.error('録音の書き出し/アップロードに失敗しました:', error);
+  } finally {
+    isUploadingRecording = false;
   }
 };
-const completeSurvey = () => { isSurveyMode.value = false; };
+
+const openSurvey = async () => {
+  // メモリ上のフラグに加え、リロードを跨いで残る surveyOpened でも二重実行を防ぐ
+  if (isSurveyMode.value || surveyOpened.value || postSurveySubmitted.value) return;
+
+  // ★ 重い処理・通信より先にフラグを立て、即座にlocalStorageへ保存する。
+  //   これ以降にリロードされても、ログの再送は起きない。
+  surveyOpened.value = true;
+  isSurveyMode.value = true;
+  stopSequence();
+  persistProductionState(true);
+
+  await logPostSurveyOpen();
+
+  // ★ 最終作品スナップショット
+  await logSequenceSnapshot(true, playCount.value);
+
+  // ★ 音声ファイルも保存（成功時のみ recordingUploaded が true になる）
+  await ensureRecordingUploaded();
+};
+
+// const openSurvey    = async () => {
+//   isSurveyMode.value = true;
+//   window.open('https://docs.google.com/forms/d/e/1FAIpQLSd4lACT6GimL9OloSUs5k7LjG8LivXz6VyGZOqIcZnLq6Sguw/viewform?usp=header', '_blank');
+//   // 全体を自動保存（選択範囲を無視して全ブロック対象）
+//   if (noteBlocks.value.length > 0 && isLoaded.value) {
+//     const allBlocks = noteBlocks.value;
+//     let totalDuration = 0;
+//     allBlocks.forEach(block => {
+//       if (players.has(block.sound)) {
+//         const p = players.player(block.sound);
+//         totalDuration += p.loaded ? p.buffer.duration : 0;
+//       }
+//     });
+//     if (totalDuration > 0) {
+//       totalDuration += 1.0;
+//       const buffer = await Tone.Offline(() => {
+//         let timeOffset = 0;
+//         allBlocks.forEach(block => {
+//           if (players.has(block.sound)) {
+//             const originalBuffer = players.player(block.sound).buffer;
+//             const source = new Tone.BufferSource(originalBuffer).toDestination();
+//             source.start(timeOffset);
+//             timeOffset += originalBuffer.duration;
+//           }
+//         });
+//       }, totalDuration);
+//       downloadWav(buffer);
+//     }
+//   }
+// };
+const submitPostSurvey = async () => {
+  postSurveyError.value = '';
+
+
+  const unanswered = postSurveyItems.value.some(item => {
+    if (item.optional) return false;
+    const val = postSurvey.value[item.key];
+    if (Array.isArray(val)) return val.length === 0;
+    return val == null || val === '';
+  });
+  // const unanswered = postSurveyItems.value.some(item =>
+  //   item.key !== 'freeFormDescription' && postSurvey.value[item.key] == null
+  // );
+  if (unanswered) {
+    postSurveyError.value = '全ての項目に回答してください。';
+    return;
+  }
+
+  try {
+    isSubmittingPostSurvey.value = true;
+    await logPostSurvey({
+      ...Object.fromEntries(postSurveyItems.value.map(i => [i.key, postSurvey.value[i.key]])),
+      condition: experimentCondition.value,
+      vasEnabled: vasEnabled.value,
+      stratum: assignedStratum.value ?? stratum.value,
+      playCount: playCount.value,
+      totalOperations: totalOperations.value,
+      // response_time_ms:  Date.now() - postSurveyOpenedAt.value,
+    });
+    postSurveySubmitted.value = true;
+    isSurveyMode.value = false;
+    // ★ フェーズ5（自由制作）へ。ログ送信の停止は currentPhase の watch が行う。
+    //   進行状態は消さず、フェーズ5として保存する → リロードしてもメイン画面が再開される。
+    currentPhase.value = 5;
+    persistProductionState(true);
+  } catch (error) {
+    console.error(error);
+    postSurveyError.value = '回答の保存に失敗しました。通信状況を確認してもう一度お試しください。';
+  } finally {
+    isSubmittingPostSurvey.value = false;
+  }
+};
 
 // =====================================================
 // ■ 試聴モード
 // =====================================================
 const isListeningMode     = ref(false);
-const listeningTimeLeft   = ref(300);
+const listeningTimeLeft   = ref(EXPERIMENT_CONFIG.listeningTimeSeconds);
 const listeningTimer      = ref(null);
 const showListeningWarning = ref(false);
+// 試聴フェーズの開始時刻（リロード後も経過時間を計算し直せるように保持する）
+const listeningStartedAt  = ref(null);
 
-const startListeningMode = () => {
-  isSoundEnabled.value = true; isListeningMode.value = true; listeningTimeLeft.value = 300;
+// 残り時間をもとにカウントダウンを開始する（新規開始／リロード復元の共通処理）
+const beginListeningCountdown = () => {
+  isSoundEnabled.value = true;
+  isListeningMode.value = true;
+  showListeningWarning.value = listeningTimeLeft.value <= EXPERIMENT_CONFIG.listeningWarningAtSeconds;
   listeningTimer.value = setInterval(() => {
     listeningTimeLeft.value--;
-    if (listeningTimeLeft.value === 60) showListeningWarning.value = true;
+    if (listeningTimeLeft.value === EXPERIMENT_CONFIG.listeningWarningAtSeconds) showListeningWarning.value = true;
     if (listeningTimeLeft.value <= 0) { clearInterval(listeningTimer.value); isListeningMode.value = false; showListeningWarning.value = false; startPhaseTimer(); }
   }, 1000);
+};
+
+const startListeningMode = () => {
+  listeningStartedAt.value = new Date();
+  listeningTimeLeft.value = EXPERIMENT_CONFIG.listeningTimeSeconds;
+  beginListeningCountdown();
+  persistProductionState(true);
+};
+
+// リロード後に試聴フェーズを再開する。経過時間ぶん残り時間を差し引き、
+// オフラインの間に時間切れになっていた場合は即座に制作フェーズへ進む。
+const resumeListeningMode = (savedListeningStartedAtMs) => {
+  listeningStartedAt.value = new Date(savedListeningStartedAtMs);
+  const elapsedSeconds = Math.floor((Date.now() - savedListeningStartedAtMs) / 1000);
+  const remaining = EXPERIMENT_CONFIG.listeningTimeSeconds - elapsedSeconds;
+  if (remaining <= 0) { startPhaseTimer(); return; }
+  listeningTimeLeft.value = remaining;
+  beginListeningCountdown();
+};
+
+const endListeningEarly = () => {
+  if (listeningTimeLeft.value > EXPERIMENT_CONFIG.listeningWarningAtSeconds && !confirm('まだ時間があります。制作フェーズに移りますか？')) return;
+  clearInterval(listeningTimer.value);
+  isListeningMode.value = false;
+  showListeningWarning.value = false;
+  listeningStartedAt.value = null;
+  // ログを残したい場合はここに追加
+  // logListeningEnd?.('early');
+  startPhaseTimer();
 };
 
 const formatListeningTime = computed(() => {
@@ -514,6 +1061,12 @@ const formatListeningTime = computed(() => {
   const s = (listeningTimeLeft.value % 60).toString().padStart(2, '0');
   return `${m}:${s}`;
 });
+
+// 試聴フェーズで設定した色をパレットに保存
+const setPaletteColor = (sound, color) => {
+  const item = soundPalette.value.find(p => p.sound === sound);
+  if (item) item.color = color;
+};
 
 // =====================================================
 // ■ 制作フェーズ管理
@@ -523,27 +1076,284 @@ const currentPhase   = ref(0);
 const endTime        = ref(null);
 const phaseTimer     = ref(null);
 
+// 制作フェーズの長さ（分）。startPhaseTimer（新規開始）とresumePhaseTimer（リロード復元）の
+// 両方から参照するため、ここで一箇所にまとめておく。値自体は config.js（EXPERIMENT_CONFIG）で管理する。
+const PHASE_TIME_MINUTES = EXPERIMENT_CONFIG.phaseTimeMinutes;
+
 const formatTime = (date) => {
   const h = date.getHours().toString().padStart(2, '0');
   const m = date.getMinutes().toString().padStart(2, '0');
   return `${h}:${m}`;
 };
 
-const startPhaseTimer = () => {
-  const start = new Date(); phaseStartTime.value = start; currentPhase.value = 1; const phaseTime = 15;
-  const end = new Date(start.getTime() + phaseTime * 60 * 1000); endTime.value = end;
-  phaseTimer.value = setInterval(() => {
-    const now = new Date(); const elapsed = (now - phaseStartTime.value) / 1000 / 60;
-    if (elapsed >= phaseTime && currentPhase.value !== 4) { currentPhase.value = 4; clearInterval(phaseTimer.value); openSurvey(); }
-    else if (elapsed >= phaseTime * 0.8 && currentPhase.value < 3) { currentPhase.value = 3; }
-    else if (elapsed >= phaseTime * 0.5 && currentPhase.value < 2) { currentPhase.value = 2; }
-  }, 1000);
+// 経過時間に応じてフェーズ(1〜4)を進める。新規開始時・リロード復元時の両方から呼ばれる。
+const runPhaseTick = () => {
+  const now = new Date();
+  const elapsed = (now - phaseStartTime.value) / 1000 / 60;
+  if (elapsed >= PHASE_TIME_MINUTES && currentPhase.value !== 4) {
+    currentPhase.value = 4; clearInterval(phaseTimer.value); openSurvey();
+  } else if (elapsed >= PHASE_TIME_MINUTES * 0.8 && currentPhase.value < 3) {
+    currentPhase.value = 3;
+  } else if (elapsed >= PHASE_TIME_MINUTES * 0.5 && currentPhase.value < 2) {
+    currentPhase.value = 2;
+  }
 };
+
+const startPhaseTimer = () => {
+  // ★ 試聴フェーズで設定した色を初期ブロックに反映
+  noteBlocks.value.forEach(block => {
+    if (block.colorOverridden) return; // 個別設定済みはスキップ
+    const palette = soundPalette.value.find(p => p.sound === block.sound);
+    if (palette) block.color = palette.color;
+  });
+
+  const start = new Date(); phaseStartTime.value = start; currentPhase.value = 1;
+  const end = new Date(start.getTime() + PHASE_TIME_MINUTES * 60 * 1000); endTime.value = end;
+  logSessionStart(vasData.value);  // ★追加
+  phaseTimer.value = setInterval(runPhaseTick, 1000);
+  persistProductionState(true);
+};
+
+/**
+ * リロード後に制作フェーズを再開する。startPhaseTimerと違い、
+ * ・Firestoreへの新規書き込み（logSessionStart等）は行わない（元セッションで記録済みのため）
+ * ・phaseStartTime/endTimeは元セッションの値をそのまま引き継ぐ（時計は止めない＝経過時間は実時間ベースのまま）
+ * ・オフラインだった間に持ち時間を超えていた場合は、即座にアンケート画面へ遷移する
+ */
+const resumePhaseTimer = (savedPhaseStartTimeMs, savedEndTimeMs) => {
+  phaseStartTime.value = new Date(savedPhaseStartTimeMs);
+  endTime.value = new Date(savedEndTimeMs);
+  currentPhase.value = 1;
+  runPhaseTick(); // 経過時間に応じて即座にフェーズを補正（すでに時間切れならここでopenSurveyへ）
+  if (currentPhase.value !== 4) {
+    phaseTimer.value = setInterval(runPhaseTick, 1000);
+  }
+};
+
+// チュートリアル用のref。以下の「リロード復元」処理が起動時にtutorialStepを
+// 直接参照する（watchの監視対象に含める）ため、チュートリアル本体のロジックより
+// 前でここに宣言しておく（<script setup>はトップレベルを上から順に実行するため）。
+const tutorialStep = ref(-1);
+const tutorialActionDone          = ref(false);
+const tutorialDuplicateDone       = ref(false);
+const noteBlocksCountAtDuplicate  = ref(0);
+
+// =====================================================
+// ■ リロード復元（事前アンケート完了後の進行状態をローカル保存）
+//
+// 対象は「事前アンケートに回答し、条件が割り付けられた後」全体。
+// チュートリアル・試聴フェーズ・制作フェーズ・事後アンケート・
+// 事後アンケート完了後（フェーズ5）のどこでリロードされても、
+// そのときいた場所から再開する。
+//
+// 進行の場所は currentPhase 単体では区別できない（チュートリアル・
+// 試聴フェーズはどちらも currentPhase = 0 のため）ので、
+// 明示的な文字列 stage をあわせて保存し、復元時はこの stage で分岐する。
+//   'tutorial'  : チュートリアル中
+//   'listening' : 試聴フェーズ中
+//   'production': 制作フェーズ中（currentPhase 1〜4、アンケート表示前）
+//   'survey'    : 事後アンケート表示中（回答前を含む）
+//   'completed' : 事後アンケート回答済み（フェーズ5・自由制作）
+// =====================================================
+const STATE_STORAGE_KEY = `dopp_state_${sessionId}`;
+let persistStateTimer = null;
+
+const computeStage = () => {
+  if (postSurveySubmitted.value) return 'completed';
+  if (surveyOpened.value || currentPhase.value >= 4) return 'survey';
+  if (currentPhase.value >= 1) return 'production';
+  if (isListeningMode.value) return 'listening';
+  return 'tutorial'; // 条件割り付け直後〜チュートリアル中はまとめてここに含める
+};
+
+const buildStateSnapshot = () => ({
+  stage:               computeStage(),
+  noteBlocks:          noteBlocks.value.map(b => ({ ...b, isPlaying: false })),
+  soundPalette:        soundPalette.value,
+  nextId:              nextId.value,
+  currentPhase:        currentPhase.value,
+  phaseStartTime:      phaseStartTime.value ? phaseStartTime.value.getTime() : null,
+  endTime:             endTime.value ? endTime.value.getTime() : null,
+  experimentCondition: experimentCondition.value,
+  assignedStratum:     assignedStratum.value,
+  vasData:             vasData.value,
+  playCount:           playCount.value,
+  totalOperations:     totalOperations.value,
+  tutorialEndedAt:     tutorialEndedAt.value,
+  // チュートリアル・試聴フェーズの再開に使う
+  tutorialStep:        tutorialStep.value,
+  listeningStartedAt:  listeningStartedAt.value ? listeningStartedAt.value.getTime() : null,
+  // 実験の進行フラグ（リロード時のログ・録音の重複送信防止に使う）
+  surveyOpened:        surveyOpened.value,
+  recordingUploaded:   recordingUploaded.value,
+  postSurveySubmitted: postSurveySubmitted.value,
+  postSurvey:          postSurvey.value, // 回答途中でリロードしても入力を失わないように
+  savedAt:             Date.now(),
+});
+
+/**
+ * 進行状態をlocalStorageへ保存する。
+ * @param {boolean} immediate - trueの場合デバウンスせず即座に保存する（フェーズ切り替え直後など）
+ */
+const persistProductionState = (immediate = false) => {
+  if (isPreSurveyMode.value) return; // 事前アンケート回答前は保存しない（割付前のため）
+  const save = () => {
+    try {
+      localStorage.setItem(STATE_STORAGE_KEY, JSON.stringify(buildStateSnapshot()));
+    } catch (error) {
+      console.warn('進行状態のローカル保存に失敗しました:', error);
+    }
+  };
+  clearTimeout(persistStateTimer);
+  if (immediate) { save(); return; }
+  persistStateTimer = setTimeout(save, 500);
+};
+
+/** 実験が完了した際、保存していた進行状態を消す（次にこのsessionIdで開いても復元させないため） */
+const clearPersistedState = () => {
+  try { localStorage.removeItem(STATE_STORAGE_KEY); } catch (error) { /* noop */ }
+};
+
+/**
+ * 起動時に呼ぶ。保存済みの進行状態が見つかれば復元してtrueを返す。
+ * 見つからなければ何もせずfalseを返す（＝通常通り事前アンケートから開始）。
+ */
+const restoreProductionStateIfAny = () => {
+  let saved;
+  try {
+    const raw = localStorage.getItem(STATE_STORAGE_KEY);
+    if (!raw) return false;
+    saved = JSON.parse(raw);
+  } catch (error) {
+    console.warn('進行状態の読み込みに失敗しました:', error);
+    return false;
+  }
+  if (!saved) return false;
+
+  // stage を持たない古い保存データ（本修正より前に保存されたもの）への後方互換。
+  // 制作フェーズの情報があれば 'production' 相当として扱い、なければ復元しない。
+  const stage = saved.stage ?? (
+    saved.currentPhase >= 1 && saved.phaseStartTime && saved.endTime ? 'production' : null
+  );
+  if (!stage) return false;
+
+  // 事前アンケートは通過済みとしてスキップする
+  isPreSurveyMode.value = false;
+
+  if (Array.isArray(saved.noteBlocks))   noteBlocks.value   = saved.noteBlocks.map(b => ({ ...b, isPlaying: false }));
+  if (Array.isArray(saved.soundPalette)) soundPalette.value = saved.soundPalette;
+  if (typeof saved.nextId === 'number')  nextId.value       = saved.nextId;
+  if (saved.experimentCondition)         experimentCondition.value = saved.experimentCondition;
+  if (saved.assignedStratum)             assignedStratum.value     = saved.assignedStratum;
+  if (saved.vasData)                     vasData.value      = saved.vasData;
+  if (typeof saved.playCount === 'number')       playCount.value       = saved.playCount;
+  if (typeof saved.totalOperations === 'number') totalOperations.value = saved.totalOperations;
+
+  // ★ 試聴フェーズを実際に通過した後（production/survey/completed）だけ有効化する。
+  //   通過前は false のままにしておく（チュートリアル中に全体再生や音素材の再生を
+  //   禁止する仕様を、復元時にも守るため）。試聴フェーズ自体の復元は resumeListeningMode
+  //   側で行う（beginListeningCountdown が有効化する）。
+  //   リロード後は音声素材が読み込み直しになるが、production/survey/completed への復元では
+  //   startListeningMode を経由しないため、isSoundEnabled が false のままになり
+  //   再生ボタンが無効化されてしまう。そのためここで明示的に有効化する。
+  if (stage === 'production' || stage === 'survey' || stage === 'completed') {
+    isSoundEnabled.value = true;
+  }
+
+  // ★ 進行フラグの復元
+  surveyOpened.value        = Boolean(saved.surveyOpened);
+  recordingUploaded.value   = Boolean(saved.recordingUploaded);
+  postSurveySubmitted.value = Boolean(saved.postSurveySubmitted);
+  if (saved.postSurvey && typeof saved.postSurvey === 'object') {
+    Object.assign(postSurvey.value, saved.postSurvey);
+  }
+
+  // ① 事後アンケート回答済み → フェーズ5（メイン画面で自由制作）。
+  //   phaseStartTime/endTimeは不要なので、値の有無に関わらず復元してよい
+  //   （これらが無いことをもって「保存データが壊れている」と判定しないのが、
+  //    2回目以降のリロードで事前アンケートへ戻ってしまう不具合の直接の対策）。
+  if (stage === 'completed') {
+    currentPhase.value = 5;
+    ensureRecordingUploaded(); // 録音アップロードが未完了だった場合の保険（完了済みなら何もしない）
+    return true;
+  }
+
+  // ② 事後アンケート表示中（回答前を含む）
+  if (stage === 'survey') {
+    currentPhase.value = 4;
+    isSurveyMode.value = true;
+    restoreTimers({
+      phaseStartedAt:  saved.phaseStartTime ?? undefined,
+      tutorialEndedAt: saved.tutorialEndedAt ?? undefined,
+    });
+    if (surveyOpened.value) {
+      // すでにアンケートを開いてログ送信も済んでいる：画面だけ復元し、ログは再送しない。
+      // 録音のアップロードが未完了だった場合のみ、固定パスへやり直す（成功済みなら何もしない）。
+      ensureRecordingUploaded();
+    } else {
+      // アンケートを開く前にリロードされていた場合のみ、通常どおり開く（初回扱い）。
+      openSurvey();
+    }
+    return true;
+  }
+
+  // ③ 制作フェーズ中（フェーズ1〜3）
+  if (stage === 'production') {
+    restoreTimers({
+      phaseStartedAt:  saved.phaseStartTime,
+      tutorialEndedAt: saved.tutorialEndedAt ?? undefined,
+    });
+    resumePhaseTimer(saved.phaseStartTime, saved.endTime);
+    return true;
+  }
+
+  // ④ 試聴フェーズ中
+  if (stage === 'listening') {
+    if (typeof saved.listeningStartedAt === 'number') {
+      resumeListeningMode(saved.listeningStartedAt);
+    } else {
+      // 開始時刻が無い古いデータ：安全のため試聴フェーズを最初からやり直す
+      startListeningMode();
+    }
+    return true;
+  }
+
+  // ⑤ チュートリアル中（条件割り付け直後〜チュートリアル終了まで）
+  //   直前に見ていたステップから再開する。アクション系ステップの「実行済み」フラグは
+  //   メモリ上のみで保持しておりリロードで失われるため、そのステップだけもう一度
+  //   操作してもらう形になる（作業自体は失われない）。
+  const step = typeof saved.tutorialStep === 'number' && saved.tutorialStep >= 0
+    ? saved.tutorialStep
+    : 0;
+  tutorialStep.value = step;
+  tutorialActionDone.value = false;
+  tutorialDuplicateDone.value = false;
+  return true;
+};
+
+// 保存対象となりうる状態が変化するたびに、事前アンケート回答後であればローカル保存する
+watch(
+  // tutorialStep はこの watch より後ろで宣言されているため、
+  // 直接参照すると <script setup> の初期化順で ReferenceError になる。
+  // ゲッター関数に包んで、実際に呼ばれる時点まで参照を遅らせる。
+  [noteBlocks, currentPhase, soundPalette, vasData, playCount, totalOperations,
+   surveyOpened, recordingUploaded, postSurveySubmitted, postSurvey,
+   () => tutorialStep.value, isListeningMode],
+  () => { persistProductionState(); },
+  { deep: true }
+);
+
+// フェーズ5（事後アンケート完了後の自由制作）では、操作ログ・スナップショットを送信しない。
+// 復元でcurrentPhaseが5にセットされた場合もこのwatchで反映される。
+watch(
+  currentPhase,
+  (phase) => { setLoggingEnabled(phase < 5); },
+  { immediate: true }
+);
 
 // =====================================================
 // ■ チュートリアル
 // =====================================================
-const tutorialStep = ref(-1);
 const currentTutorial = computed(() => {
   if (tutorialStep.value < 0 || tutorialStep.value >= tutorialSteps.length) return null;
   return tutorialSteps[tutorialStep.value];
@@ -553,38 +1363,37 @@ const isHelpMode       = ref(false);
 const isHelpMenuOpen   = ref(false);
 
 const tutorialSteps = [
-  {                         title: null,              message: 'DOPP Sequencer へようこそ。',                                                               type: 'next',   targets: [] },
-  {                         title: null,              message: '今から15分間の簡単な作曲体験を行います。',                                                      type: 'next',   targets: [] },
-  {                         title: null,              message: '体験を始める前に、まずは操作方法を覚えましょう。',                                                type: 'next',   targets: [] },
-  {                         title: '素材パレット',      message: 'ここは、素材パレットです。',                                                                 type: 'next',   targets: ['.sidebar'] },
-  { id: 'sound_palette',    title: '素材パレット',      message: '音（A〜H）のいずれかを右側のエリアにドラッグ＆ドロップしてみましょう。',                            type: 'action', targets: ['.sidebar', '.sequencer-wrapper'] },
-  { id: 'color_select',     title: 'カラーパレット',    message: 'ここはカラーパレットです。色を選んでブロックをクリックすると色を塗れます。',                           type: 'action', targets: ['.sidebar-color-section'] },
-  { id: 'color_palette',    title: 'カラーパレット',    message: '試しにブロックに塗ってみましょう。塗り終わったら「適用終了」を押してください。',                       type: 'action', targets: ['.sidebar-color-section', '.sequencer-wrapper'] },
-  { id: 'work_space',       title: '作業スペース',      message: 'ここは作業スペースです。ブロックをドラッグして順番を入れ替えてみましょう。',                           type: 'action', targets: ['.music-block', '.sequencer-wrapper'] },
-  { id: 'select_box',       title: 'セレクトボックス',  message: 'セレクトボックスでブロックの音を変更することもできます。変えてみましょう。',                           type: 'action', targets: ['.selectbox-wrapper', '.sequencer-wrapper'] },
-  { id: 'select_button',    title: '選択ボタン',       message: '始点→終点を選択して範囲を作り、「選択複製」してみましょう。同時に選択した項目を「選択削除」してみましょう。', type: 'action', targets: ['.btn-select-range', '.sequencer-wrapper', '.controls_group'] },
-  {                         title: '楽曲の再生',       message: '「再生」は選択範囲（無選択なら全体）を再生。「停止」はその場で再生を停止。「保存」は選択範囲（無選択なら全体）を保存できます。', type: 'next', targets: ['.controls_play'] },
-  {                         title: 'やり直し',         message: 'これはやり直し機能です。',                                                                   type: 'next',   targets: ['.controls_undo-redo'] },
-  { id: 'undo',             title: 'やり直し',         message: '「戻る」は一つ前の操作に戻ることができます。',                                                  type: 'action', targets: ['.btn-undo'] },
-  { id: 'redo',             title: 'やり直し',         message: '「進む」は「戻る」を押す前の操作に戻ることができます。',                                          type: 'action', targets: ['.btn-redo'] },
-  {                         title: 'ヘルプ',          message: '操作方法を忘れた時はいつでもここから確認できます。',                                             type: 'done',   targets: ['.controls_help'] },
+  { id: 'welcome',                title: null,              message: 'DOPP Sequencer へようこそ。',                                                               type: 'next',   targets: [] },
+  {                               title: null,              message: '今から15分間の簡単な作曲体験を行います。',                                                      type: 'next',   targets: [] },
+  {                               title: null,              message: '体験を始める前に、まずは操作方法を覚えましょう。',                                                type: 'next',   targets: [] },
+  { id: 'palette_intro',          title: '素材パレット',      message: 'ここは、素材パレットです。',                                                                 type: 'next',   targets: ['.sidebar'] },
+  { id: 'closePaletteColorModal', title: '素材パレット',      message: '音をクリックするとブロックの色を変更することができます。',                                        type: 'action', targets: ['.palette-item'] },
+  { id: 'sound_palette',          title: '素材パレット',      message: '音（A〜H）のいずれかを右側のエリアにドラッグ＆ドロップしてみましょう。',                            type: 'action', targets: ['.sidebar', '.sequencer-wrapper'] },
+  { id: 'color_select',           title: 'カラーパレット',    message: 'ここはカラーパレットです。色を選んでブロックをクリックすると色を塗れます。',                           type: 'action', targets: ['.sidebar-color-section'] },
+  { id: 'color_palette',          title: 'カラーパレット',    message: '試しにブロックに塗ってみましょう。塗り終わったら「適用終了」を押してください。',                       type: 'action', targets: ['.sidebar-color-section', '.sequencer-wrapper'] },
+  { id: 'work_space',             title: '作業スペース',      message: 'ここは作業スペースです。ブロックをドラッグして順番を入れ替えてみましょう。',                           type: 'action', targets: ['.music-block', '.sequencer-wrapper'] },
+  { id: 'select_box',             title: 'セレクトボックス',  message: 'セレクトボックスでブロックの音を変更することもできます。変えてみましょう。',                           type: 'action', targets: ['.selectbox-wrapper', '.sequencer-wrapper'] },
+  { id: 'select_button',          title: '選択とコピー',       message: 'ブロックを2つ選択して始点と終点を指定し、その範囲を「コピー」してみましょう。同時に選択した項目を「選択削除」してみましょう。', type: 'action', targets: ['.btn-select-range', '.sequencer-wrapper', '.controls_group'] },
+  { id: 'playback_intro',         title: '楽曲の再生',       message: '「再生」は選択範囲（無選択なら全体）を再生。「停止」はその場で再生を停止。「保存」は選択範囲（無選択なら全体）を保存できます。', type: 'next', targets: ['.controls_play'] },
+  { id: 'undo_redo_intro',        title: 'やり直し',         message: 'これはやり直し機能です。',                                                                   type: 'next',   targets: ['.controls_undo-redo'] },
+  { id: 'undo',                   title: 'やり直し',         message: '「戻る」は一つ前の操作に戻ることができます。',                                                  type: 'action', targets: ['.btn-undo'] },
+  { id: 'redo',                   title: 'やり直し',         message: '「進む」は「戻る」を押す前の操作に戻ることができます。',                                          type: 'action', targets: ['.btn-redo'] },
+  { id: 'help_intro',             title: 'ヘルプ',          message: '操作方法を忘れた時はいつでもここから確認できます。',                                             type: 'done',   targets: ['.controls_help'] },
 ];
 
+// helpMenuItems は tutorialSteps を配列の「番号」ではなく「id」で参照する。
+// こうしておくと、途中に新しいステップを挿入・削除しても対応がズレない。
 const helpMenuItems = [
-  { label: '素材パレット',     stepIndex: 3  },
-  { label: 'カラーパレット',   stepIndex: 5  },
-  { label: '作業スペース',    stepIndex: 7  },
-  { label: 'セレクトボックス', stepIndex: 8  },
-  { label: '選択ボタン',     stepIndex: 9  },
-  { label: '楽曲の再生',     stepIndex: 10 },
-  { label: 'やり直し',       stepIndex: 11 },
-  { label: 'ヘルプボタン',    stepIndex: 14 },
-  { label: 'はじめから',     stepIndex: 0  },
+  { label: '素材パレット',     stepId: 'palette_intro'   },
+  { label: 'カラーパレット',   stepId: 'color_select'    },
+  { label: '作業スペース',    stepId: 'work_space'      },
+  { label: 'セレクトボックス', stepId: 'select_box'      },
+  { label: '選択とコピー',     stepId: 'select_button'   },
+  { label: '楽曲の再生',     stepId: 'playback_intro'  },
+  { label: 'やり直し',       stepId: 'undo_redo_intro' },
+  { label: 'ヘルプボタン',    stepId: 'help_intro'      },
+  { label: 'はじめから',     stepId: 'welcome'          },
 ];
-
-const tutorialActionDone          = ref(false);
-const tutorialDuplicateDone       = ref(false);
-const noteBlocksCountAtDuplicate  = ref(0);
 
 const clearTutorialHighlights = () => {
   document.querySelectorAll('.tutorial-focus').forEach(el => el.classList.remove('tutorial-focus'));
@@ -604,6 +1413,35 @@ const applyTutorialHighlight = (step) => {
 
 watch(tutorialStep, (newStep) => { applyTutorialHighlight(newStep); });
 
+// ===== ドラッグデモ（sound_palette ステップ用） =====
+const isDragDemoVisible = ref(true);   // 実際にドラッグを始めたら false にする
+const dragDemoStyle = ref({});
+
+const isDragDemoActive = computed(
+  () => currentTutorial.value?.id === 'sound_palette' && isDragDemoVisible.value
+);
+
+const updateDragDemoPosition = () => {
+  const from = document.querySelector('.palette-item');
+  const to   = document.querySelector('.sequencer-wrapper');
+  if (!from || !to) return;
+  const f = from.getBoundingClientRect();
+  const t = to.getBoundingClientRect();
+  dragDemoStyle.value = {
+    '--from-x': `${f.left + f.width / 2}px`,
+    '--from-y': `${f.top  + f.height / 2}px`,
+    '--to-x':   `${t.left + 100}px`,
+    '--to-y':   `${t.top  + 100}px`,
+  };
+};
+
+watch(tutorialStep, () => {
+  if (currentTutorial.value?.id === 'sound_palette') {
+    isDragDemoVisible.value = true;
+    nextTick(updateDragDemoPosition);
+  }
+});
+
 const advanceTutorial = () => {
   if (tutorialStep.value < tutorialSteps.length - 1) { tutorialStep.value++; tutorialActionDone.value = false; }
   else { endTutorial(); }
@@ -612,6 +1450,7 @@ const advanceTutorial = () => {
 const endTutorial = () => {
   clearTutorialHighlights();
   tutorialStep.value = -1;
+  logTutorialEnd();  // ★追加
   if (isHelpMode.value) { isHelpMode.value = false; }
   else { startListeningMode(); }
 };
@@ -623,20 +1462,42 @@ const startTutorial = () => {
   noteBlocksCountAtDuplicate.value = 0;
 };
 
-const startTour = () => { isHelpMenuOpen.value = true; };
+// 制作フェーズ（currentPhase >= 1）が始まるまでは使い方メニューを開けない。
+// チュートリアル中に開けてしまうと、進行中の本来のチュートリアルが
+// ヘルプ用のツアーに上書きされ、閉じても試聴フェーズへ移行しないまま
+// メイン画面に取り残されるバグがあったため（ボタン側のdisabledに加え、
+// 呼び出し元がボタン以外に増えても安全なよう、ここでも防ぐ）。
+const startTour = () => {
+  if (currentPhase.value < 1) return;
+  isHelpMenuOpen.value = true;
+  logHelpOpen();
+};
+// const startTour = () => { isHelpMenuOpen.value = true; };
 
-const startTourFromStep = (stepIndex) => {
+const startTourFromStep = (stepId) => {
+  const index = tutorialSteps.findIndex(step => step.id === stepId);
+  if (index === -1) {
+    console.warn(`[tutorial] stepId "${stepId}" に対応する tutorialSteps が見つかりません。`);
+    return;
+  }
   isHelpMenuOpen.value = false;
   isHelpMode.value = true;
-  tutorialStep.value = stepIndex;
+  tutorialStep.value = index;
   tutorialActionDone.value = false;
   tutorialDuplicateDone.value = false;
 };
 
 onMounted(() => {
+  // 制作フェーズ開始後にリロードされていた場合は、そこから再開する
+  const resumed = restoreProductionStateIfAny();
+  if (!resumed) {
+    // preSurveyOpenedAt.value = Date.now();
+    logPreSurveyOpen();
+  }
   window.addEventListener("keydown", onKeydown);
   document.addEventListener('click', onDocClick);
-  setTimeout(() => startTutorial(), 1000);
+  // 事前アンケート完了後に startTutorial() を呼ぶ
+  window.addEventListener('resize', updateDragDemoPosition);
 });
 
 onBeforeUnmount(() => {
@@ -645,27 +1506,38 @@ onBeforeUnmount(() => {
   if (phaseTimer.value)    clearInterval(phaseTimer.value);
   if (listeningTimer.value) clearInterval(listeningTimer.value);
   clearTutorialHighlights();
+  window.removeEventListener('resize', updateDragDemoPosition);
 });
 </script>
 
 <template>
   <div class="app-layout">
 
-    <!-- アンケートオーバーレイ -->
-    <div v-if="isSurveyMode" class="survey-overlay">
-      <div class="survey-modal">
-        <p>アンケートにご回答ください。</p>
-        <p class="survey-hint">別タブでアンケートが開いています。</p>
-        <button @click="completeSurvey" class="btn-survey-done">回答完了</button>
-      </div>
-    </div>
+    <!-- 事前アンケート -->
+    <PreSurveyModal
+      v-if="isPreSurveyMode"
+      v-model="preSurvey"
+      :error="preSurveyError"
+      :loading="isAssigningCondition"
+      @submit="submitPreSurvey"
+    />
+
+    <!-- 事後アンケート -->
+    <PostSurveyModal
+      v-if="isSurveyMode"
+      v-model="postSurvey"
+      :items="postSurveyItems"
+      :error="postSurveyError"
+      :loading="isSubmittingPostSurvey"
+      @submit="submitPostSurvey"
+    />
 
     <!-- ヘルプ目次モーダル -->
     <div v-if="isHelpMenuOpen" class="help-menu-overlay" @click.self="isHelpMenuOpen = false">
       <div class="help-menu-modal">
         <p class="help-menu-title">どの操作を確認しますか？</p>
         <div class="help-menu-list">
-          <button v-for="item in helpMenuItems" :key="item.stepIndex" class="help-menu-item" @click="startTourFromStep(item.stepIndex)">
+          <button v-for="item in helpMenuItems" :key="item.stepId" class="help-menu-item" @click="startTourFromStep(item.stepId)">
             {{ item.label }}
           </button>
         </div>
@@ -675,6 +1547,13 @@ onBeforeUnmount(() => {
 
     <!-- チュートリアル暗幕 -->
     <div v-if="isTutorialActive" class="tutorial-overlay"></div>
+
+    <div v-if="currentTutorial?.id === 'sound_palette'"
+        class="drag-demo"
+        :style="dragDemoStyle">
+      <div class="drag-demo-block">A</div>
+      <span class="drag-demo-cursor">👆</span>
+    </div>
 
     <!-- チュートリアルポップアップ -->
     <div v-if="currentTutorial" class="tutorial-popover">
@@ -694,48 +1573,58 @@ onBeforeUnmount(() => {
     <!-- 試聴モードオーバーレイ -->
     <div v-if="isListeningMode" class="listening-overlay">
       <!-- VAS 入力モーダル（試聴フェーズ） -->
-      <div v-if="vasModalTarget" class="vas-overlay" @click.self="closeVasModal">
-        <div class="vas-modal">
-          <p class="vas-modal-title">Sound {{ vasModalTarget }} の印象</p>
-          <div class="vas-rows">
-            <div v-for="item in vasLabels" :key="item.key" class="vas-row">
-              <span class="vas-label-left">{{ item.left }}</span>
-              <input type="range" min="0" max="100" class="vas-slider"
-                :value="vasData[vasModalTarget][item.key]"
-                @input="vasData[vasModalTarget][item.key] = Number($event.target.value)" />
-              <span class="vas-label-right">{{ item.right }}</span>
-            </div>
-          </div>
-          <button class="vas-close-btn" @click="closeVasModal">保存して閉じる</button>
-        </div>
-      </div>
+      <VasRatingModal
+        v-if="vasEnabled && vasModalTarget"
+        :sound="vasModalTarget"
+        :labels="vasLabels"
+        :ratings="vasData[vasModalTarget]"
+        @update="(key, value) => setVasRating(vasModalTarget, key, value)"
+        @close="closeVasModal"
+      />
 
       <div class="listening-modal">
-        <p class="listening-title">まずはじっくり音を聴いてみましょう</p>
+        <p class="listening-title">
+          {{ vasEnabled
+            ? 'まずは各ブロックをクリックして音への印象を評価してみてください'
+            : 'まずはじっくり音を聴いてみましょう'
+          }}
+        </p>
         
         <div class="listening-blocks">
           <div v-for="item in soundPalette" :key="item.sound"
-               class="listening-block" :style="{ backgroundColor: item.color }"
+               class="listening-block" style="background-color: #555555"
                @click="previewSound(item)">
             <span class="listening-block-label">{{ item.sound }}</span>
             
           </div>
         </div>
-        <p class="listening-block-hint">各ブロックをクリックして音への印象を評価してみてください</p>
-        <p v-if="showListeningWarning" class="listening-warning">⏰ 1分後に制作が始まります</p>
+        <p class="listening-block-hint">
+          {{ vasEnabled
+            ? '制作フェーズではパレット下の比喩表示ボタンを活用して音のコントラストを意識してみましょう'
+            : '各ブロックをクリックして音を聴いてみてください'
+          }}
+        </p>
+        <p v-if="showListeningWarning" class="listening-warning">⏰ 約{{ Math.round(EXPERIMENT_CONFIG.listeningWarningAtSeconds / 60) }}分後に制作が始まります</p>
         <p class="listening-timer">残り {{ formatListeningTime }}</p>
+        <!-- <button class="btn-start-now" @click="endListeningEarly">制作を始める →</button> -->
       </div>
     </div>
 
+    <!-- サイト共通ヘッダー -->
+    <header class="site-header">
+      <h1>DOPP Sequencer</h1>
+    </header>
+
+    <div class="body-row">
     <!-- ■ サイドバー -->
     <div class="sidebar">
       <h2>Palette</h2>
-      <p class="hint">Drag to right area 👉</p>
+      <!-- <p class="hint">Drag to right area 👉</p> -->
       <draggable v-model="soundPalette" item-key="sound" class="palette-list"
                  :group="{ name: 'music', pull: 'clone', put: false }"
                  :clone="cloneSound" :sort="false" @start="onPaletteDragStart">
         <template #item="{ element }">
-          <div class="palette-item" @click="previewSound(element)">
+          <div class="palette-item" :style="{ backgroundColor: element.color }" @click="currentPhase >= 1 ? (openPaletteColorModal(element), previewSound(element)) : openPaletteColorModal(element)">
             <span class="palette-icon">♪</span>
             <span class="palette-label">{{ element.sound }}</span>
           </div>
@@ -749,7 +1638,7 @@ onBeforeUnmount(() => {
         <p v-if="isPaintMode" class="paint-hint">ブロックをクリックして色を適用</p>
       </div>
 
-      <div class="sidebar-vas-section">
+      <div v-if="vasEnabled" class="sidebar-vas-section">
         <h3>比喩</h3>
         <button class="btn-vas-mode" :class="{ active: isVasMode }" @click="toggleVasMode" :disabled="currentPhase === 0">
           {{ isVasMode ? '解除' : '表示' }}
@@ -758,26 +1647,37 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- パレット色変更モーダル（制作フェーズ） -->
+    <PaletteColorModal
+      v-if="paletteColorModalTarget"
+      :target="paletteColorModalTarget"
+      @change="applyPaletteColor"
+      @close="closePaletteColorModal"
+    />
+
     <!-- ■ メインコンテンツ -->
     <div class="main-content">
-      <div class="header">
-        <h1>DOPP Sequencer</h1>
+      <div class="content-toolbar">
         <div v-if="currentPhase > 0" class="phase-indicator" :class="`phase-${currentPhase}`">
           <div v-if="currentPhase === 1" class="phase-display">
             <span class="phase-icon">🎵</span>
-            <span class="phase-text">フェーズ1: 制作開始<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
+            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　音のコントラストを意識しましょう！' : '制作開始' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
           </div>
           <div v-else-if="currentPhase === 2" class="phase-display">
             <span class="phase-icon">🔁</span>
-            <span class="phase-text">フェーズ2: 折り返し地点<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
+            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　音のコントラストを意識しましょう！' : '折り返し地点' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
           </div>
           <div v-else-if="currentPhase === 3" class="phase-display">
             <span class="phase-icon">⏰</span>
-            <span class="phase-text">フェーズ3: 仕上げの時間<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
+            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　音のコントラストを意識しましょう！' : '仕上げの時間' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
           </div>
           <div v-else-if="currentPhase === 4" class="phase-display">
             <span class="phase-icon">💾</span>
             <span class="phase-text">お疲れ様でした！ 作品を保存してください</span>
+          </div>
+          <div v-else-if="currentPhase === 5" class="phase-display">
+            <span class="phase-icon">🎧</span>
+            <span class="phase-text">ご協力ありがとうございました。引き続き自由に制作できます<span class="phase-end-time">作品は「⬇ 保存」から保存できます</span></span>
           </div>
         </div>
         <div class="controls">
@@ -790,16 +1690,21 @@ onBeforeUnmount(() => {
             <button @click="exportAudio" class="btn-export" :disabled="!isLoaded">⬇ 保存</button>
           </div>
           <div class="controls_group">
-            <button @click="duplicateSelection" class="btn-duplicate" :disabled="!selectionInfo.has">⧉ 複製</button>
-            <button @click="clearSelection"     class="btn-clear"     :disabled="!selectionInfo.has">選択解除</button>
-            <button @click="deleteSelection"    class="btn-clear"     :disabled="!selectionInfo.has">選択削除</button>
+            <button @click="duplicateSelection" class="btn-duplicate" :disabled="!selectionInfo.has">⧉ コピー</button>
+            <button @click="clearSelection"     class="btn-clear"     :disabled="!selectionInfo.has">☐ 解除</button>
+            <button @click="deleteSelection"    class="btn-clear"     :disabled="!selectionInfo.has">✕ 選択削除</button>
           </div>
           <div class="controls_undo-redo">
             <button @click="undo" class="btn-undo" :disabled="undoStack.length === 0">↩ 戻る</button>
             <button @click="redo" class="btn-redo" :disabled="redoStack.length === 0">↪ 進む</button>
           </div>
           <div class="controls_help">
-            <button @click="startTour" class="btn-help">? 使い方</button>
+            <button
+              @click="startTour"
+              class="btn-help"
+              :disabled="currentPhase < 1"
+              :title="currentPhase < 1 ? '制作フェーズが始まると使えるようになります' : ''"
+            >? 使い方</button>
           </div>
         </div>
       </div>
@@ -819,11 +1724,13 @@ onBeforeUnmount(() => {
                 'group-member':   groupDragActive && groupSegmentIds.includes(element.id),
                 'is-group-proxy': groupDragActive && groupDraggedId === element.id,
                 'paint-mode':     isPaintMode,
-                'vas-mode':       isVasMode,
+                'vas-mode':       isVasDisplay,
               }"
               :style="{ backgroundColor: element.color }"
               :data-id="element.id"
-              @click="onBlockClick(element, $event)"
+              @click="onBlockClick(element, $event); setRangePoint(element.id)"
+              
+              
             >
               <span class="step-number">{{ index + 1 }}</span>
 
@@ -838,50 +1745,23 @@ onBeforeUnmount(() => {
               </template>
 
               <template v-else>
-                <!-- ========== VAS 表示モード ========== -->
-                <template v-if="isVasMode">
-                  <span class="sound-name sound-name--vas">{{ element.sound.toUpperCase() }}</span>
-                  <div class="vas-bars">
-                    <div v-for="item in vasLabels" :key="item.key" class="vas-bar-row">
-                      <span class="vas-bar-label-left">{{ item.left }}</span>
-                      <div class="vas-bar-track-wrap">
-                        <div class="vas-bar-track">
-                          <div class="vas-bar-fill" :style="{ width: vasData[element.sound][item.key] + '%' }">
-                            <div class="vas-bar-thumb"></div>
-                          </div>
-                        </div>
-                      </div>
-                      <span class="vas-bar-label-right">{{ item.right }}</span>
-                    </div>
-                  </div>
-                  <!-- VASモード中もボタン類をすべて表示 -->
-                  <div class="selectbox-wrapper" @click.stop>
-                    <button class="selectbox-trigger" @click.stop="toggleDropdown(element.id)">▼</button>
-                    <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
-                      <button v-for="s in ['A','B','C','D','E','F','G','H']" :key="s"
-                              class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
-                              @click="selectSound(element.id, s)">{{ s }}</button>
-                    </div>
-                  </div>
-                  <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
-                  <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
-                </template>
+                <!-- 音名：VAS表示のときだけ sound-name--vas が付く（動的クラス） -->
+                <span class="sound-name" :class="{ 'sound-name--vas': isVasDisplay }">{{ element.sound.toUpperCase() }}</span>
 
+                <!-- VAS表示のときだけ出るバー（音名より後・ボタン類より前の順序を維持） -->
+                <VasBars v-if="isVasDisplay" :labels="vasLabels" :ratings="vasData[element.sound]" />
 
-                <!-- ========== 通常表示モード ========== -->
-                <template v-else>
-                  <span class="sound-name">{{ element.sound.toUpperCase() }}</span>
-                  <div class="selectbox-wrapper" @click.stop>
-                    <button class="selectbox-trigger" @click.stop="toggleDropdown(element.id)">▼</button>
-                    <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
-                      <button v-for="s in ['A','B','C','D','E','F','G','H']" :key="s"
-                              class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
-                              @click="selectSound(element.id, s)">{{ s }}</button>
-                    </div>
+                <!-- ここから下は通常表示・VAS表示で共通 -->
+                <div class="selectbox-wrapper" @click.stop>
+                  <button class="selectbox-trigger" @click.stop="toggleDropdown(element.id)">▼</button>
+                  <div v-if="openDropdownId === element.id" class="selectbox-dropdown">
+                    <button v-for="s in soundNames" :key="s"
+                            class="selectbox-option" :class="{ 'is-selected': element.sound === s }"
+                            @click="selectSound(element.id, s)">{{ s }}</button>
                   </div>
-                  <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button>
-                  <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
-                </template>
+                </div>
+                <!-- <button class="btn-select-range" @click.stop="setRangePoint(element.id)">{{ getSelectBtnText(element) }}</button> -->
+                <button class="btn-delete" @click.stop="removeBlock(index)">×</button>
               </template>
             </div>
           </template>
@@ -889,17 +1769,36 @@ onBeforeUnmount(() => {
         <div v-if="noteBlocks.length === 0" class="empty-state">左のパレットから音を置いてみよう</div>
       </div>
     </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.app-layout { display: flex; height: 100vh; background-color: #222; color: white; font-family: sans-serif; overflow: hidden; }
+.app-layout { display: flex; flex-direction: column; height: 100vh; background-color: #222; color: white; font-family: sans-serif; overflow: hidden; }
+
+/* =====================================================
+   サイト共通ヘッダー
+   ===================================================== */
+.site-header {
+  flex-shrink: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #444;
+}
+.site-header h1 { margin: 0; font-size: 1.4rem; font-weight: 700; text-align: left; }
+
+.body-row { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 
 /* =====================================================
    サイドバー
    ===================================================== */
 .sidebar { width: 120px; background-color: #2d2d2d; padding: 20px 10px; border-right: 1px solid #444; display: flex; flex-direction: column; overflow-y: auto; }
-.sidebar h2 { font-size: 1.2rem; margin-bottom: 5px; text-align: center; }
+.sidebar h2 { font-size: 1.2rem; padding: 5px; text-align: center; } /* margin-bottom: 5px; */ 
 .hint { font-size: 0.7rem; color: #aaa; text-align: center; margin-bottom: 20px; }
 .palette-list { display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .palette-item { width: 80px; height: 60px; background-color: #444; border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: grab; border: 1px solid #555; transition: transform 0.1s, background-color 0.1s; }
@@ -927,33 +1826,34 @@ onBeforeUnmount(() => {
    メインコンテンツ
    ===================================================== */
 .main-content { flex: 1; padding: 20px; display: flex; flex-direction: column; overflow-y: auto; }
-.header { margin-bottom: 20px; }
+.content-toolbar { margin-bottom: 20px; }
 .controls { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.controls_play      { display: flex; gap: 10px; align-items: center; }
-.controls_group     { display: flex; gap: 10px; align-items: center; }
-.controls_undo-redo { display: flex; gap: 10px; align-items: center; }
+.controls_play      { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.controls_group     { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.controls_undo-redo { display: flex; gap: 10px; flex-wrap: wrap; align-items: center;  }
 .controls_help      { display: flex; gap: 10px; align-items: center; }
 
-.sequencer-wrapper { background-color: #333; padding: 20px; border-radius: 8px; flex: 1; min-height: 300px; display: flex; flex-direction: column; position: relative; }
+.sequencer-wrapper { background-color: #333; padding: 20px; border-radius: 8px; flex: 1; min-height: 300px; display: flex; flex-direction: column; position: relative; overflow-y: auto; }
 .block-list { display: flex; flex-wrap: wrap; gap: 30px 10px; flex: 1; align-content: flex-start; width: 100%; min-height: 100%; }
 .empty-state { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: #666; font-weight: bold; border: 2px dashed #444; border-radius: 8px; box-sizing: border-box; pointer-events: none; }
 
 /* =====================================================
    ボタン共通
    ===================================================== */
-button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; font-weight: bold; }
+button { cursor: pointer; border: none; padding: 10px 20px; border-radius: 4px; font-weight: bold; white-space: nowrap; }
 button:hover { filter: brightness(1.2); }
 button:active { filter: brightness(0.8); transform: translateY(2px); }
 button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #888; }
 
 .btn-play { background-color: rgba(76,175,80,1.0); min-width: 112px; color: white; }
 .btn-play:disabled { background-color: #555; cursor: wait; }
-.duration-display { cursor: default !important; background-color: rgba(255,255,255,0.3); color: rgba(255,255,255,1.0); font-size: 1.00rem; filter: none !important; transform: none !important; }
+.duration-display { cursor: default !important; background-color: rgba(255,255,255,0.3); color: rgba(255,255,255,1.0); /* font-size: 1.00rem;*/ filter: none !important; transform: none !important; }
 .duration-display:active { background-color: rgba(255,255,255,0.3); }
 .btn-stop    { background-color: rgba(255,71,87,1.0); color: white; }
 .btn-export  { background-color: #9b59b6; color: white; }
 .btn-export:disabled { background-color: #555; cursor: wait; }
-.btn-help    { background-color: #7f8c8d; color: white; border-radius: 50px; padding: 5px 15px; font-size: 0.9rem; }
+.btn-help    { background-color: #7f8c8d; color: white; border-radius: 50px; /* padding: 5px 15px;*//* font-size: 0.9rem;*/ }
+.btn-help:disabled { background-color: #555; cursor: not-allowed; }
 .btn-duplicate { background-color: rgba(255,255,255,0.3); color: #fff; }
 .btn-duplicate:hover { background-color: rgba(255,255,255,0.4); }
 .btn-duplicate:disabled { background-color: #333; cursor: not-allowed; }
@@ -972,6 +1872,7 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
    ===================================================== */
 .seq-chosen, .seq-drag, .seq-ghost { transform: scale(0.85); }
 .seq-ghost { opacity: 0.4; }
+
 
 .music-block {
   width: 160px;
@@ -993,7 +1894,7 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .music-block.anchor-start,
 .music-block.anchor-end   { border-color: rgba(255,255,255,0.9); }
 .music-block.group-member { outline: 2px solid rgba(255,200,0,0.85); outline-offset: 2px; opacity: 0.35; pointer-events: none; }
-.music-block.is-group-proxy { background: #3a3a3a !important; border: 2px dashed rgba(255,255,255,0.7) !important; justify-content: center; padding-top: 28px; }
+.music-block.is-group-proxy { background: #3a3a3a !important; border: 2px dashed rgba(255,255,255,0.7) !important; justify-content: center; /* padding-top: 28px; */ }
 .music-block.paint-mode   { cursor: crosshair; }
 
 .step-number { position: absolute; top: 4px; left: 6px; font-size: 0.8rem; font-weight: bold; color: rgba(255,255,255,0.5); }
@@ -1070,148 +1971,9 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .btn-delete::after { content: ''; position: absolute; top: -6px; bottom: -6px; left: -6px; right: -6px; }
 .btn-delete:hover { background: rgba(255,0,0,0.7); }
 
-.btn-select-range { position: absolute !important; bottom: 3%; background: rgba(255,255,255,0.2); color: white; width: auto; padding: 0 8px; height: 20px; font-size: 10px; line-height: 20px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.3); }
-.btn-select-range::after { content: ''; position: absolute; top: -8px; bottom: -8px; left: -8px; right: -8px; }
-.btn-select-range:hover { background: rgba(255,255,255,0.9); color: #333; filter: none; }
-
-/* =====================================================
-   VAS バー表示（制作フェーズ）
-   ===================================================== */
-
-/*
-  .vas-bars：ブロック全体を覆う絶対配置コンテナ。
-  上部パディング = 音名ラベル分、下部 = 削除ボタン分を避ける。
-*/
-.vas-bars {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 10px;
-  padding: 32px 10px 28px;
-  box-sizing: border-box;
-}
-
-/*
-  1行 = 左ラベル ─── トラック ─── 右ラベル の横一列レイアウト。
-  ラベルは flex-shrink:0 で固定幅、トラックは flex:1 で残り幅をすべて占有。
-  → 全項目のトラック幅が完全に統一される。
-*/
-/* 変更後 */
-.vas-bar-row {
-  position: relative;      /* ラベルのabsolute基準 */
-  width: 80%;
-  height: 11px;
-  flex-shrink: 0;
-}
-
-.vas-bar-label-left,
-.vas-bar-label-right {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 12px;
-  color: rgba(255,255,255,0.65);
-  white-space: nowrap;
-  line-height: 1;
-  pointer-events: none;
-}
-
-.vas-bar-label-left  { right: calc(100% + 4px); }  /* トラック左端の外側 */
-.vas-bar-label-right { left:  calc(100% + 4px); }  /* トラック右端の外側 */
-
-.vas-bar-track-wrap {
-  width: 100%;      /* 親(.vas-bar-row)の幅いっぱい・ラベルと無関係 */
-  height: 11px;
-  display: flex;
-  align-items: center;
-}
-
-.vas-bar-track {
-  width: 100%;
-  height: 3px;
-  background: rgba(255,255,255,0.25);
-  border-radius: 3px;
-  overflow: visible;
-  position: relative;
-}
-
-.vas-bar-fill {
-  height: 100%;
-  background: rgba(255,255,255,0.75);
-  border-radius: 3px;
-  position: relative;
-}
-
-/* つまみ：バー右端に追従、読み取り専用 */
-.vas-bar-thumb {
-  position: absolute;
-  top: 50%;
-  right: 0;
-  width: 9px;
-  height: 9px;
-  background: white;
-  border-radius: 50%;
-  transform: translate(50%, -50%);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
-  pointer-events: none;
-}
-
-/* =====================================================
-   VAS モーダル（試聴フェーズ）
-   ===================================================== */
-.vas-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.75);
-  z-index: 1100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.vas-modal {
-  background: #1a1a2e;
-  border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 14px;
-  padding: 28px 32px;
-  min-width: 320px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.6);
-}
-
-.vas-modal-title { font-size: 1.1rem; font-weight: bold; color: #7eb8f7; margin: 0; text-align: center; }
-.vas-rows        { display: flex; flex-direction: column; gap: 14px; }
-.vas-row         { display: flex; align-items: center; gap: 10px; }
-
-.vas-label-left,
-.vas-label-right {
-  font-size: 0.8rem;
-  color: rgba(255,255,255,0.7);
-  min-width: 44px;
-  white-space: nowrap;
-}
-.vas-label-left  { text-align: right; }
-.vas-label-right { text-align: left;  }
-
-.vas-slider    { flex: 1; accent-color: #7eb8f7; cursor: pointer; }
-.vas-close-btn { background: #3498db; color: white; padding: 10px 24px; border-radius: 8px; font-size: 0.95rem; align-self: center; }
-
-/* =====================================================
-   アンケート
-   ===================================================== */
-.survey-overlay  { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; display: flex; align-items: center; justify-content: center; }
-.survey-modal    { background: #333; padding: 40px; border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 16px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-.survey-modal p  { margin: 0; font-size: 1.1rem; color: white; font-weight: bold; }
-.survey-hint     { font-size: 0.85rem; color: #aaa; font-weight: normal !important; }
-.btn-survey-done { background: #4caf50; color: white; padding: 10px 30px; border-radius: 4px; }
+/* .btn-select-range { position: absolute !important; bottom: 3%; background: rgba(255,255,255,0.2); color: white; width: auto; padding: 0 8px; height: 20px; font-size: 10px; line-height: 20px; border-radius: 50px; border: 1px solid rgba(255,255,255,0.3); } */
+/* .btn-select-range::after { content: ''; position: absolute; top: -8px; bottom: -8px; left: -8px; right: -8px; } */
+/* .btn-select-range:hover { background: rgba(255,255,255,0.9); color: #333; filter: none; } */
 
 /* =====================================================
    フェーズ表示
@@ -1222,6 +1984,7 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .phase-2 { background: rgba(255,193,7,0.3);  border: 1px solid rgba(255,193,7,0.6);  }
 .phase-3 { background: rgba(255,87,34,0.3);  border: 1px solid rgba(255,87,34,0.6);  }
 .phase-4 { background: rgba(156,39,176,0.3); border: 1px solid rgba(156,39,176,0.6); }
+.phase-5 { background: rgba(33,150,243,0.25); border: 1px solid rgba(33,150,243,0.55); }
 .phase-icon     { margin-right: 4px; font-size: 1.1rem; }
 .phase-text     { display: flex; flex-direction: column; gap: 2px; }
 .phase-end-time { font-size: 0.75rem; color: rgba(255,255,255,0.7); font-weight: normal; }
@@ -1240,6 +2003,19 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .listening-block-hint   { font-size: 1.0rem; font-weight: bold; color: rgba(255,255,255,0.6); margin: 0; bottom: 0px; text-align: center; line-height: 0; }
 .listening-warning { font-size: 1.1rem; color: #ff6b6b; font-weight: bold; margin: 0; animation: blink 1s ease-in-out infinite; }
 .listening-timer   { font-size: 1.2rem; color: rgba(255,255,255,0.5); margin: 0; font-weight: bold; }
+.btn-start-now {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 10px 28px;
+  border-radius: 50px;
+  font-size: 0.9rem;
+  transition: background 0.2s, color 0.2s;
+}
+.btn-start-now:hover {
+  background: rgba(255, 255, 255, 0.25);
+  color: white;
+}
 
 @keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
@@ -1274,4 +2050,35 @@ button:disabled { filter: brightness(1.0); transform: translateY(0px); color: #8
 .tutorial-btn-cancel:hover { background: rgba(255,255,255,0.22); color: rgba(255,255,255,0.9); filter: none; }
 .tutorial-action-hint { font-size: 0.8rem; color: rgba(255,255,255,0.5); font-style: italic; }
 .tutorial-focus { position: relative; z-index: 960 !important; box-shadow: 0 0 0 4px rgba(52,152,219,0.85), 0 0 24px rgba(52,152,219,0.35) !important; border-radius: 4px; pointer-events: auto !important; }
+/* ドラッグデモ */
+.drag-demo {
+  position: fixed;
+  left: 0; top: 0;
+  z-index: 965;            /* tutorial-focus(960) より上、popover(970) より下 */
+  pointer-events: none;    /* 本物のドラッグを妨げない */
+  animation: dragDemoMove 2.4s ease-in-out infinite;
+}
+.drag-demo-block {
+  width: 80px; height: 60px;
+  margin: -30px 0 0 -40px;
+  background: #555;
+  border: 2px solid rgba(255,255,255,0.6);
+  border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 900; color: #fff;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.5);
+}
+.drag-demo-cursor {
+  position: absolute; right: -14px; bottom: -22px;
+  font-size: 1.6rem;
+}
+
+@keyframes dragDemoMove {
+  0%   { transform: translate(var(--from-x), var(--from-y)) scale(1);   opacity: 0; }
+  10%  { transform: translate(var(--from-x), var(--from-y)) scale(1);   opacity: 1; }
+  20%  { transform: translate(var(--from-x), var(--from-y)) scale(0.9); opacity: 1; }
+  70%  { transform: translate(var(--to-x),   var(--to-y))   scale(0.9); opacity: 1; }
+  80%  { transform: translate(var(--to-x),   var(--to-y))   scale(1);   opacity: 1; }
+  100% { transform: translate(var(--to-x),   var(--to-y))   scale(1);   opacity: 0; }
+}
 </style>
