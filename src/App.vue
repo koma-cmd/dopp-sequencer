@@ -1600,7 +1600,7 @@ onBeforeUnmount(() => {
         </div>
         <p class="listening-block-hint">
           {{ vasEnabled
-            ? '制作フェーズではパレット下の比喩表示ボタンを活用して音のコントラストを意識してみましょう'
+            ? '各ブロックをクリックして音を聴いてみてください'
             : '各ブロックをクリックして音を聴いてみてください'
           }}
         </p>
@@ -1661,15 +1661,15 @@ onBeforeUnmount(() => {
         <div v-if="currentPhase > 0" class="phase-indicator" :class="`phase-${currentPhase}`">
           <div v-if="currentPhase === 1" class="phase-display">
             <span class="phase-icon">🎵</span>
-            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　音のコントラストを意識しましょう！' : '制作開始' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
+            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '制作開始　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
           </div>
           <div v-else-if="currentPhase === 2" class="phase-display">
             <span class="phase-icon">🔁</span>
-            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　音のコントラストを意識しましょう！' : '折り返し地点' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
+            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '折り返し地点　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
           </div>
           <div v-else-if="currentPhase === 3" class="phase-display">
             <span class="phase-icon">⏰</span>
-            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　音のコントラストを意識しましょう！' : '仕上げの時間' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
+            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '仕上げの時間　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
           </div>
           <div v-else-if="currentPhase === 4" class="phase-display">
             <span class="phase-icon">💾</span>
