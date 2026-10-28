@@ -520,7 +520,8 @@ const MAX_RECORDING_BYTES = 20 * 1024 * 1024; // Storageルールの create 条�
 const uploadRecordingToCloud = async (audioBuffer) => {
   const blob = encodeWavBlob(audioBuffer);
   const sid = sessionId || 'unknown_session';
-  const path = `recordings/${sid}.wav`;
+  const cond = experimentCondition.value ?? 'unknown_condition';
+  const path = `recordings/${cond}_${sid}.wav`;
 
   // ルールの上限を超えると「unauthorized」になり、既存ファイルとの区別がつかなくなるため、事前に検出する
   if (blob.size >= MAX_RECORDING_BYTES) {
@@ -1631,6 +1632,7 @@ onBeforeUnmount(() => {
         </template>
       </draggable>
 
+      <!--
       <div class="sidebar-color-section">
         <h3>Color</h3>
         <input type="color" class="sidebar-color-picker" :value="paintColor ?? '#ffffff'" @change="startPaintMode($event.target.value)" />
@@ -1645,7 +1647,9 @@ onBeforeUnmount(() => {
         </button>
         <p v-if="currentPhase === 0" class="vas-hint">制作開始後に使えます</p>
       </div>
+    -->
     </div>
+    
 
     <!-- パレット色変更モーダル（制作フェーズ） -->
     <PaletteColorModal
@@ -1661,15 +1665,15 @@ onBeforeUnmount(() => {
         <div v-if="currentPhase > 0" class="phase-indicator" :class="`phase-${currentPhase}`">
           <div v-if="currentPhase === 1" class="phase-display">
             <span class="phase-icon">🎵</span>
-            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '制作開始　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
+            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '制作開始　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
           </div>
           <div v-else-if="currentPhase === 2" class="phase-display">
             <span class="phase-icon">🔁</span>
-            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '折り返し地点　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
+            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '折り返し地点　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
           </div>
           <div v-else-if="currentPhase === 3" class="phase-display">
             <span class="phase-icon">⏰</span>
-            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　パレット下の比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '仕上げの時間　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
+            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　比喩表示ボタンを活用して、音のコントラストを意識してみましょう！' : '仕上げの時間　音のコントラストを意識してみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
           </div>
           <div v-else-if="currentPhase === 4" class="phase-display">
             <span class="phase-icon">💾</span>
@@ -1705,6 +1709,21 @@ onBeforeUnmount(() => {
               :disabled="currentPhase < 1"
               :title="currentPhase < 1 ? '制作フェーズが始まると使えるようになります' : ''"
             >? 使い方</button>
+          </div>
+
+          <div class="sidebar-color-section">
+            <!-- <h3>Color</h3> -->
+            <input type="color" class="sidebar-color-picker" :value="paintColor ?? '#ffffff'" @change="startPaintMode($event.target.value)" />
+            <button v-if="isPaintMode" class="btn-end-paint" @click="endPaintMode">適用終了</button>
+            <!-- <p v-if="isPaintMode" class="paint-hint">ブロックをクリックして色を適用</p> -->
+          </div>
+
+          <div v-if="vasEnabled" class="sidebar-vas-section">
+            <!-- <h3>比喩</h3> -->
+            <button class="btn-vas-mode" :class="{ active: isVasMode }" @click="toggleVasMode" :disabled="currentPhase === 0">
+              比喩{{ isVasMode ? '解除' : '表示' }}
+            </button>
+            <p v-if="currentPhase === 0" class="vas-hint">制作開始後に使えます</p>
           </div>
         </div>
       </div>
@@ -1774,7 +1793,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.app-layout { display: flex; flex-direction: column; height: 100vh; background-color: #222; color: white; font-family: sans-serif; overflow: hidden; }
+.app-layout { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background-color: #222; color: white; font-family: sans-serif; overflow: hidden; }
 
 /* =====================================================
    サイト共通ヘッダー
@@ -1807,16 +1826,16 @@ onBeforeUnmount(() => {
 .palette-icon { font-size: 1.2rem; margin-bottom: 2px; }
 .palette-label { font-size: 1.0rem; font-weight: bold; }
 
-.sidebar-color-section { margin-top: 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sidebar-color-section { margin-inline: 8px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .sidebar-color-section h3 { font-size: 1.0rem; margin: 0; text-align: center; }
-.sidebar-color-picker { width: 60px; height: 60px; border: none; border-radius: 8px; cursor: pointer; background: none; padding: 0; }
+.sidebar-color-picker { width: 50px; height: 50px; border: none; border-radius: 8px; cursor: pointer; background: none; padding: 0; }
 .btn-end-paint { background: #e74c3c; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; width: 80px; }
 .btn-end-paint:hover { background: #c0392b; }
 .paint-hint { font-size: 0.65rem; color: #aaa; text-align: center; margin: 0; }
 
-.sidebar-vas-section { margin-top: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.sidebar-vas-section { display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .sidebar-vas-section h3 { font-size: 1.0rem; margin: 0; text-align: center; }
-.btn-vas-mode { background: rgba(255,255,255,0.15); color: white; padding: 6px 10px; border-radius: 6px; font-size: 0.8rem; width: 80px; transition: background 0.15s; border: 1px solid transparent; }
+.btn-vas-mode { background: rgba(255,255,255,0.15); color: white; padding: 8px 10px; border-radius: 6px; font-size: 0.8rem; width: 80px; transition: background 0.15s; border: 1px solid transparent; }
 .btn-vas-mode:hover { background: rgba(255,255,255,0.25); filter: none; }
 .btn-vas-mode.active { background: rgba(126,184,247,0.25); border-color: rgba(126,184,247,0.6); color: #7eb8f7; }
 .btn-vas-mode:disabled { opacity: 0.35; cursor: not-allowed; }

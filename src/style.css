@@ -1,0 +1,27 @@
+/* グローバルCSS
+ * main.js で `import './style.css'` を追加して読み込んでください。
+ * Viteテンプレートの既存指定（#app の padding など）が残っている場合は、
+ * このファイルの内容に置き換えてください。
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#app {
+  margin: 0;
+  padding: 0;
+  max-width: none;
+  width: 100%;
+  height: 100%;
+}
