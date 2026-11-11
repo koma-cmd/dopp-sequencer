@@ -440,6 +440,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
    */
   const pushEvent = async (type, detail = {}) => {
     if (!loggingEnabled.value) return;
+    if (phaseStartedAt.value == null) return;
     touchAction();
 
     const entry = {
@@ -519,7 +520,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   // ■ 3. チュートリアル終了時刻の記録
   // =====================================================
   const logTutorialEnd = () => {
-    tutorialEndedAt.value = Date.now();
+    if (tutorialEndedAt.value == null) tutorialEndedAt.value = Date.now();
   };
 
   // =====================================================
@@ -528,7 +529,10 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
 
   /** 操作カウンタ（セッション通算） */
   const totalOperations = ref(0);
-  const incrementOps = () => { totalOperations.value++; };
+  const incrementOps = () => {
+    if (!loggingEnabled.value || phaseStartedAt.value == null) return;
+    totalOperations.value++; 
+  };
 
   // =====================================================
   // ■ リロード復元用
@@ -555,7 +559,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
    * @param {number}  playFrequency - 試聴頻度（最終ログ時のみ使用）
    */
   const logSequenceSnapshot = async (isFinal = false, playFrequency = null) => {
-    if (!loggingEnabled.value) return;
+    if (!loggingEnabled.value || phaseStartedAt.value == null) return;
     const seq = buildSequenceInfo();
 
     // 編集なしの連続再生はスキップ（最終ログは常に保存）
@@ -566,9 +570,9 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     }
 
     // チュートリアル終了からの経過時間（初回ブロック配置・初回再生の計測に使用）
-    const sinceTutorial = tutorialEndedAt.value
-      ? Date.now() - tutorialEndedAt.value
-      : null;
+    // const sinceTutorial = tutorialEndedAt.value
+    //   ? Date.now() - tutorialEndedAt.value
+    //   : null;
 
     const data = {
       user_id:            userId,
@@ -576,7 +580,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
       is_final:           isFinal,
       vas_enabled:        Boolean(resolveValue(vasEnabled)),
       elapsed_ms:         elapsedMs(),
-      since_tutorial_ms:  sinceTutorial,
+      // since_tutorial_ms:  sinceTutorial,
       idle_ms:            idleMs(),
       total_operations:   totalOperations.value,
       play_frequency:     isFinal ? playFrequency : null,

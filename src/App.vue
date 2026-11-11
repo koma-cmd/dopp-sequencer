@@ -28,13 +28,23 @@ const soundPalette = ref([
   { sound: 'H', label: 'Sound H', color: '#555555' },
 ]);
 
-const noteBlocks = ref([
+const createInitialNoteBlocks = () => [
   { id: 1, sound: 'A', color: '#555555', isPlaying: false },
   { id: 2, sound: 'B', color: '#555555', isPlaying: false },
   { id: 3, sound: 'C', color: '#555555', isPlaying: false },
   { id: 4, sound: 'D', color: '#555555', isPlaying: false },
   { id: 5, sound: 'E', color: '#555555', isPlaying: false },
-]);
+];
+
+const noteBlocks = ref(createInitialNoteBlocks());
+
+// const noteBlocks = ref([
+//   { id: 1, sound: 'A', color: '#555555', isPlaying: false },
+//   { id: 2, sound: 'B', color: '#555555', isPlaying: false },
+//   { id: 3, sound: 'C', color: '#555555', isPlaying: false },
+//   { id: 4, sound: 'D', color: '#555555', isPlaying: false },
+//   { id: 5, sound: 'E', color: '#555555', isPlaying: false },
+// ]);
 
 const nextId = ref(9);
 const isLoaded = ref(false);
@@ -985,6 +995,16 @@ const submitPostSurvey = async () => {
     isSubmittingPostSurvey.value = true;
     await logPostSurvey({
       ...Object.fromEntries(postSurveyItems.value.map(i => [i.key, postSurvey.value[i.key]])),
+      ...Object.fromEntries(
+        postSurveyItems.value
+          .filter(i => i.type === 'multiple' && i.hasOther)
+          .map(i => [
+            `${i.key}Other`,
+            postSurvey.value[i.key]?.includes('other')
+              ? (postSurvey.value[`${i.key}Other`] ?? '').trim()
+              : null,
+          ])
+      ),
       condition: experimentCondition.value,
       vasEnabled: vasEnabled.value,
       stratum: assignedStratum.value ?? stratum.value,
@@ -1101,6 +1121,17 @@ const runPhaseTick = () => {
 };
 
 const startPhaseTimer = () => {
+  stopSequence();
+  noteBlocks.value = createInitialNoteBlocks();
+  nextId.value = 9;                 // パレット追加用IDの採番も初期値に戻す
+  undoStack.value = [];             // チュートリアル中の履歴は引き継がない
+  redoStack.value = [];
+  clearSelection();
+  endPaintMode();
+  openDropdownId.value = null;
+  playCount.value = 0;              // チュートリアル中の再生回数を制作フェーズに持ち込まない
+  totalOperations.value = 0;        // 同上(下の注意を参照)
+
   // ★ 試聴フェーズで設定した色を初期ブロックに反映
   noteBlocks.value.forEach(block => {
     if (block.colorOverridden) return; // 個別設定済みはスキップ
@@ -1346,10 +1377,15 @@ watch(
 
 // フェーズ5（事後アンケート完了後の自由制作）では、操作ログ・スナップショットを送信しない。
 // 復元でcurrentPhaseが5にセットされた場合もこのwatchで反映される。
+// watch(
+//   currentPhase,
+//   (phase) => { setLoggingEnabled(phase < 5); },
+//   { immediate: true }
+// );
 watch(
-  currentPhase,
-  (phase) => { setLoggingEnabled(phase < 5); },
-  { immediate: true }
+  () => currentPhase.value < 5 && tutorialStep.value < 0,
+  (enabled) => { setLoggingEnabled(enabled); },
+  { immediate: true, flush: 'sync' }
 );
 
 // =====================================================
@@ -1665,15 +1701,15 @@ onBeforeUnmount(() => {
         <div v-if="currentPhase > 0" class="phase-indicator" :class="`phase-${currentPhase}`">
           <div v-if="currentPhase === 1" class="phase-display">
             <span class="phase-icon">🎵</span>
-            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　比喩表示ボタンを活用し、音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' : '制作開始　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
+            <span class="phase-text">フェーズ1: {{ vasEnabled ? '制作開始　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！　また、比喩表示ボタンを活用して、コントラストの変化を確認してみましょう！' : '制作開始　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">{{ formatTime(endTime) }}まで</span></span>
           </div>
           <div v-else-if="currentPhase === 2" class="phase-display">
             <span class="phase-icon">🔁</span>
-            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　比喩表示ボタンを活用し、音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' : '折り返し地点　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
+            <span class="phase-text">フェーズ2: {{ vasEnabled ? '折り返し地点　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！　また、比喩表示ボタンを活用して、コントラストの変化を確認してみましょう！' : '折り返し地点　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}</span></span>
           </div>
           <div v-else-if="currentPhase === 3" class="phase-display">
             <span class="phase-icon">⏰</span>
-            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　比喩表示ボタンを活用し、音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' : '仕上げの時間　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
+            <span class="phase-text">フェーズ3: {{ vasEnabled ? '仕上げの時間　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！　また、比喩表示ボタンを活用して、コントラストの変化を確認してみましょう！' : '仕上げの時間　音のコントラストを意識して10秒以上の楽曲を作ってみましょう！' }}<span class="phase-end-time">終了 {{ formatTime(endTime) }}　2分後にアンケートに移ります</span></span>
           </div>
           <div v-else-if="currentPhase === 4" class="phase-display">
             <span class="phase-icon">💾</span>
