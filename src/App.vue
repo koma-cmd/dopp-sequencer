@@ -531,7 +531,7 @@ const uploadRecordingToCloud = async (audioBuffer) => {
   const blob = encodeWavBlob(audioBuffer);
   const sid = sessionId || 'unknown_session';
   const cond = experimentCondition.value ?? 'unknown_condition';
-  const path = `recordings/${cond}_${sid}.wav`;
+  const path = `recordings/${sessionGroup}/${cond}_${sid}.wav`;
 
   // ルールの上限を超えると「unauthorized」になり、既存ファイルとの区別がつかなくなるため、事前に検出する
   if (blob.size >= MAX_RECORDING_BYTES) {
@@ -729,6 +729,7 @@ const recordingUploaded = ref(false);
 
 const {
   sessionId,
+  sessionGroup,
   userId,
   totalOperations,
   incrementOps,
@@ -786,6 +787,24 @@ const submitPreSurvey = async () => {
   //    preSurveyError.value = '電子音響音楽の認知度を選択してください。';
   //    return;
   // }
+
+  if (!preSurvey.value.gender) {
+    preSurveyError.value = '性別を選択してください。';
+    return;
+  }
+
+  // 全角数字（例：２０）で入力されても受け付ける
+  const ageText = String(preSurvey.value.age ?? '').normalize('NFKC').trim();
+  if (!/^\d{1,3}$/.test(ageText)) {
+    preSurveyError.value = '年齢は半角数字でご記入ください。';
+    return;
+  }
+  const age = Number(ageText);
+  // if (age < 18 || age > 100) {   // ← 対象者に合わせて範囲を調整
+  //   preSurveyError.value = '年齢を正しくご記入ください。';
+  //   return;
+  // }
+
   if (preSurvey.value.agreeTerms !== 'yes') {
     preSurveyError.value = '利用規約に同意してください。';
     return;
@@ -815,6 +834,8 @@ const submitPreSurvey = async () => {
       //   : null,
       // knewElectroacoustic:  preSurvey.value.knewElectroacoustic,
       agreeTerms:           preSurvey.value.agreeTerms,
+      gender: preSurvey.value.gender,
+      age,
     };
 
     // ★ preSurveyData をそのまま渡す（経験年数・認知度も含む）

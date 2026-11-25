@@ -5,6 +5,7 @@ import {
   musicExperienceOptions,
   musicExperienceCategory,
   musicExperienceTimes,
+  genderOptions,
   TERMS_URL,
 } from '../constants/surveyItems';
 
@@ -37,7 +38,7 @@ watch(() => survey.value.musicExperienceTypes, (types) => {
 
 <template>
   <SurveyModalShell
-    title="研究利用への同意"
+    title="事前アンケート"
     submit-label="実験を開始する"
     loading-label="準備中..."
     :error="error"
@@ -62,7 +63,7 @@ watch(() => survey.value.musicExperienceTypes, (types) => {
       </label>
     </div>
     -->
-
+    <!--
     <div v-if="survey.musicExperience === 'yes'" class="survey-section">
       <p class="survey-question">Q1-a. どのような音楽創作・制作を経験しましたか？</p>
 
@@ -72,7 +73,7 @@ watch(() => survey.value.musicExperienceTypes, (types) => {
           {{ opt.label }}
         </label>
 
-        <!-- チェックされたジャンルだけ追加の2問を表示 -->
+  
         <div v-if="survey.musicExperienceTypes.includes(opt.value) && survey.musicExperienceDetails[opt.value]"
              class="survey-genre-detail">
           <input
@@ -109,6 +110,45 @@ watch(() => survey.value.musicExperienceTypes, (types) => {
         </div>
       </div>
     </div>
+    -->
+
+    <div class="survey-section">
+      <p class="survey-question">
+        あなたの性別について、当てはまるものを選んでください。
+      </p>
+      <div class="survey-inline-options">
+        <label v-for="f in genderOptions" :key="f.value" class="survey-option">
+          <input
+            type="radio"
+            name="gender"
+            :value="f.value"
+            v-model="survey.gender"
+          />
+          {{ f.label }}
+        </label>
+      </div>
+    </div>
+
+
+    <div class="survey-section">
+      <p class="survey-question">
+        あなたの年齢(満年齢)について、教えてください。
+      </p>
+      <div class="survey-age-row">
+          <span>満</span>
+          <input
+            v-model.trim="survey.age"
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            maxlength="3"
+            class="survey-text-input survey-age-input"
+            placeholder="例：20"
+          />
+          <span>歳</span>
+
+      </div>
+    </div>
 
     <div class="survey-section">
       <p class="survey-question">
@@ -137,4 +177,6 @@ watch(() => survey.value.musicExperienceTypes, (types) => {
   border-left: 2px solid #666;
 }
 .survey-inline-options { display: flex; gap: 16px; flex-wrap: wrap; }
+.survey-age-row { display: flex; align-items: center; gap: 8px; }
+.survey-age-input { width: 80px; text-align: center; }
 </style>

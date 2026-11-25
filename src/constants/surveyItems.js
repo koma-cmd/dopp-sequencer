@@ -4,6 +4,14 @@
 // ---------------------------------------------------------
 // 事前アンケート
 // ---------------------------------------------------------
+
+export const genderOptions = [
+  {value: 'male',   label: '男'},
+  {value: 'female', label: '女'},
+  {value: 'other',  label: 'その他'},
+  {value: 'noAnswer',   label: '回答しない'},
+];
+
 export const musicExperienceOptions = [
   { value: 'pops&rock', label: 'POPS・ロック・歌もの等' },
   { value: 'classic',   label: 'クラシック・現代音楽等' },
@@ -35,6 +43,8 @@ export const createDefaultPreSurvey = () => ({
   musicExperienceOther: '',     // 「その他」の自由記述
   musicExperienceDetails: {},   // { [genre]: { category, times } }
   agreeTerms: '',
+  gender: '',
+  age: '',
 });
 
 // ---------------------------------------------------------

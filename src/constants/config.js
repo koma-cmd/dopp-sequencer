@@ -26,8 +26,11 @@ const toNumber = (value, fallback) => {
 };
 
 export const EXPERIMENT_CONFIG = {
+  // ...既存の項目（maxUndoHistory, phaseTimeMinutes など）
+  sessionGroup: '2026-11-26',   // 保存先のフォルダ名。実施前にここを書き換える
+
   // 制作フェーズの長さ（分）
-  phaseTimeMinutes: toNumber(import.meta.env.VITE_PHASE_TIME_MINUTES, 15),
+  phaseTimeMinutes: toNumber(import.meta.env.VITE_PHASE_TIME_MINUTES, 0.5),
 
   // 試聴フェーズの長さ（秒）
   listeningTimeSeconds: toNumber(import.meta.env.VITE_LISTENING_TIME_SECONDS, 300),

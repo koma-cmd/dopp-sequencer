@@ -22,6 +22,7 @@ import {
   increment,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { EXPERIMENT_CONFIG } from './constants/config';   // ファイル上部に追加
 
 // =====================================================
 // ■ セッション・ユーザ情報
@@ -90,6 +91,8 @@ const createRandomizationBlock = () => shuffle(['vas', 'vas', 'no_vas', 'no_vas'
 export function useLogger({ vasEnabled, noteBlocks, players }) {
   const userId = getUserId();
   const sessionId = getOrCreateSessionId(userId);
+  const sessionGroup = EXPERIMENT_CONFIG.sessionGroup || 'default';
+  const sessionDocRef = doc(db, 'experiments', sessionGroup, 'sessions', sessionId);
 
   // フェーズ開始時刻（制作フェーズ開始時にセット）
   const phaseStartedAt = ref(null);
@@ -187,7 +190,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     if (!stratum) throw new Error('stratum is required for random assignment.');
 
     const stateRef = doc(db, 'randomization', stratum);
-    const sessionRef = doc(db, 'sessions', sessionId);
+    const sessionRef = sessionDocRef; //sessionDocRef;
 
     return await runTransaction(db, async (transaction) => {
       const sessionSnap = await transaction.get(sessionRef);
@@ -250,7 +253,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   const logPreSurvey = async (data) => {
     
     await setDoc(
-      doc(db, 'sessions', sessionId),
+      sessionDocRef,
       {
         user_id:                 userId,
         session_id:              sessionId,
@@ -262,7 +265,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     );
 
     
-    const snap = await getDoc(doc(db, 'sessions', sessionId));
+    const snap = await getDoc(sessionDocRef);
     const openedAt    = snap.data().pre_survey_opened_at?.toDate() ?? null;
     const submittedAt = snap.data().pre_survey_submitted_at?.toDate() ?? null;
     const responseTimeMs = openedAt && submittedAt
@@ -271,7 +274,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
 
     
     await setDoc(
-      doc(db, 'sessions', sessionId),
+      sessionDocRef,
       {
         pre_survey_response_time_ms: responseTimeMs,
         updated_at:                  serverTimestamp(),
@@ -281,7 +284,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   };
 
   // const logPreSurvey = async (data) => {
-  //   const snap = await getDoc(doc(db, 'sessions', sessionId));
+  //   const snap = await getDoc(sessionDocRef);
   //   const openedAt = snap.exists() ? snap.data().pre_survey_opened_at : null;
   //   const submittedAt = new Date();
   //   const responseTimeMs = openedAt
@@ -289,7 +292,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   //     : null;
 
   //   await setDoc(
-  //     doc(db, 'sessions', sessionId),
+  //     sessionDocRef,
   //     {
   //       user_id: userId,
   //       session_id: sessionId,
@@ -306,7 +309,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   const logPostSurvey = async (data) => {
     
     await setDoc(
-      doc(db, 'sessions', sessionId),
+      sessionDocRef,
       {
         user_id:                  userId,
         session_id:               sessionId,
@@ -318,7 +321,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     );
 
     
-    const snap = await getDoc(doc(db, 'sessions', sessionId));
+    const snap = await getDoc(sessionDocRef);
     const openedAt    = snap.data().post_survey_opened_at?.toDate() ?? null;
     const submittedAt = snap.data().post_survey_submitted_at?.toDate() ?? null;
     const responseTimeMs = openedAt && submittedAt
@@ -327,7 +330,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
 
     
     await setDoc(
-      doc(db, 'sessions', sessionId),
+      sessionDocRef,
       {
         post_survey_response_time_ms: responseTimeMs,
         updated_at:                   serverTimestamp(),
@@ -337,7 +340,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   };
 
   // const logPostSurvey = async (data) => {
-  //   const snap = await getDoc(doc(db, 'sessions', sessionId));
+  //   const snap = await getDoc(sessionDocRef);
   //   const openedAt = snap.exists() ? snap.data().post_survey_opened_at : null;
   //   const submittedAt = new Date();
   //   const responseTimeMs = openedAt
@@ -345,7 +348,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   //     : null;
 
   //   await setDoc(
-  //     doc(db, 'sessions', sessionId),
+  //     sessionDocRef,
   //     {
   //       user_id: userId,
   //       session_id: sessionId,
@@ -365,7 +368,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   const logPreSurveyOpen = async () => {
     try {
       await setDoc(
-        doc(db, 'sessions', sessionId),
+        sessionDocRef,
         {
           pre_survey_opened_at: serverTimestamp(),
           updated_at: serverTimestamp(),
@@ -380,7 +383,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   const logPostSurveyOpen = async () => {
     try {
       await setDoc(
-        doc(db, 'sessions', sessionId),
+        sessionDocRef,
         {
           post_survey_opened_at: serverTimestamp(),
           updated_at: serverTimestamp(),
@@ -423,7 +426,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     // 呼び出し元でawaitされていないため、失敗してもローカルの時刻(phaseStartedAt等)は
     // 既に上で設定済み。ここでの失敗はFirestore側の記録漏れに留まる。
     try {
-      await setDoc(doc(db, 'sessions', sessionId), data, { merge: true });
+      await setDoc(sessionDocRef, data, { merge: true });
     } catch (error) {
       console.error('[useLogger] セッション開始情報の記録に失敗しました:', error);
     }
@@ -455,7 +458,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
 
     try {
       await addDoc(
-        collection(db, 'sessions', sessionId, 'events'),
+        collection(sessionDocRef, 'events'),
         entry
       );
     } catch (error) {
@@ -592,7 +595,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
     // ここで失敗を吸収し、アンケート画面への遷移自体は止めない。
     try {
       await addDoc(
-        collection(db, 'sessions', sessionId, 'snapshots'),
+        collection(sessionDocRef, 'snapshots'),
         data
       );
     } catch (error) {
@@ -613,7 +616,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
    */
   const logRecordingUploaded = async (downloadUrl, storagePath) => {
     await setDoc(
-      doc(db, 'sessions', sessionId),
+      sessionDocRef,
       {
         user_id:                 userId,
         session_id:              sessionId,
@@ -633,7 +636,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
    */
   const hasRecordingRecord = async () => {
     try {
-      const snap = await getDoc(doc(db, 'sessions', sessionId));
+      const snap = await getDoc(sessionDocRef);
       return Boolean(snap.exists() && snap.data().recording_storage_path);
     } catch (error) {
       console.error('[useLogger] 録音の記録有無の確認に失敗しました:', error);
@@ -646,6 +649,7 @@ export function useLogger({ vasEnabled, noteBlocks, players }) {
   // =====================================================
   return {
     sessionId,
+    sessionGroup,
     userId,
     totalOperations,
     incrementOps,
